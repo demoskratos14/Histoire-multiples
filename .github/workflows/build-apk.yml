@@ -33,6 +33,15 @@ jobs:
 
       - name: Préparer le SDK Android
         uses: android-actions/setup-android@v3
+        with:
+          # Par defaut, cette action essaie aussi d'installer le paquet
+          # "tools" (l'ancien outillage Android historique), que Google a
+          # retire de son depot -- ce qui fait echouer l'etape avec
+          # "Failed to find package 'tools'". On ne demande donc que
+          # platform-tools, seul reellement necessaire ici (le reste,
+          # build-tools/platforms, est telecharge automatiquement par
+          # Gradle/AGP au moment de la compilation).
+          packages: "platform-tools"
 
       - name: Préparer Gradle
         uses: gradle/actions/setup-gradle@v4
