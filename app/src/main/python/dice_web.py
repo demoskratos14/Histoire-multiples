@@ -1584,12 +1584,13 @@ def render_story_selector_page():
     """Page de choix d'histoire : montree tant qu'aucune histoire n'a ete
     choisie dans cette session (premier lancement de l'appli), et
     accessible a tout moment via le lien 'Changer d'histoire' du jeu."""
-    cards = []
+        cards = []
     for slug in stories.STORY_ORDER:
         story = stories.STORIES[slug]
+        thumb = story.get("thumbnail_b64") or story["bg_image_b64"]
         cards.append(f"""
         <a href="{url_for('select_story', slug=slug)}" class="story-card">
-          <img src="data:image/jpeg;base64,{story['bg_image_b64']}" alt="{story['title']}">
+          <img src="data:image/jpeg;base64,{thumb}" alt="{story['title']}">
           <div class="story-card-title">{story['title']}</div>
           <div class="story-card-subtitle">{story['subtitle']}</div>
         </a>
