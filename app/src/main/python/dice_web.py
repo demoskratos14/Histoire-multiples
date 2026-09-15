@@ -44,6 +44,7 @@ def _ensure_story_selected():
     if session is None and request.endpoint not in (
         "index", "select_story", "change_story",
         "create_story_form", "do_create_story",
+        "debug_images",
     ):
         return redirect(url_for("index"))
 
