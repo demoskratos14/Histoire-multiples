@@ -2058,6 +2058,7 @@ def debug_images():
     de l'histoire en cours, sans avoir besoin d'un cable/logcat."""
     info = {
         "pillow_disponible": image_utils._PIL_AVAILABLE,
+        "pillow_erreur_import": image_utils._PIL_IMPORT_ERROR,
         "histoire_active": CURRENT_STORY,
     }
     bg = (CURRENT_STORY_CONFIG or {}).get("bg_image_b64") or ""

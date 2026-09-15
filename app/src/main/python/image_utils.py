@@ -38,8 +38,13 @@ import io
 try:
     from PIL import Image
     _PIL_AVAILABLE = True
-except ImportError:
+    _PIL_IMPORT_ERROR = None
+except Exception as e:  # capture large (pas seulement ImportError) : une
+    # bibliotheque native manquante/incompatible peut remonter sous
+    # d'autres formes (ex. OSError/dlopen). On garde le message exact
+    # pour pouvoir le consulter via /debug_images plutot que de deviner.
     _PIL_AVAILABLE = False
+    _PIL_IMPORT_ERROR = f"{type(e).__name__}: {e}"
 
 
 # Cote le plus long, en pixels, au-dela duquel une image de FOND est
