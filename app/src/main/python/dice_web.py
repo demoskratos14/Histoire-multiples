@@ -26,6 +26,14 @@ from dice_engine import (DiceSession, FATE_FACES, FATE_BY_KEY, SUCCESS_LABELS,
 import image_utils
 import mistral_client
 import stories
+from bg_key_page_data import BG_IMAGE_B64 as KEY_PAGE_BG_B64
+
+# Note : contrairement aux images de fond des histoires (voir stories.py),
+# cette image n'est PAS passee par image_utils.resize_bg_b64() -- elle
+# n'a pas besoin d'etre mise au format "portrait" puisqu'elle est affichee
+# en bandeau ("hero") en haut de la page, decoupee par le CSS
+# (object-fit:cover), pas en fond plein ecran. Elle est deja redimensionnee
+# a une taille raisonnable directement dans bg_key_page_data.py.
 
 app = Flask(__name__)
 # Limite la taille des requetes (en pratique : les images de totems
@@ -45,6 +53,7 @@ def _ensure_story_selected():
         "index", "select_story", "change_story",
         "create_story_form", "do_create_story",
         "debug_images",
+        "configure_key_page", "do_configure_key", "skip_key_page",
     ):
         return redirect(url_for("index"))
 
@@ -107,6 +116,12 @@ CURRENT_STORY = None       # slug de l'histoire active (ou None)
 CURRENT_STORY_CONFIG = {}  # entree stories.STORIES courante
 session = None             # DiceSession active (creee par switch_story())
 
+# Vrai des que la page de configuration de la cle API a ete affichee une
+# premiere fois lors de ce lancement de l'appli -- evite qu'elle
+# reapparaisse a chaque retour sur "/" une fois qu'on l'a deja vue (elle
+# reste neanmoins accessible a tout moment via son propre lien/route).
+KEY_PAGE_SEEN = False
+
 
 def switch_story(slug):
     """Bascule l'application entiere sur l'histoire demandee : recharge sa
@@ -158,6 +173,8 @@ def switch_story(slug):
     if not was_loaded and default_totem and default_totem.get("label"):
         key = new_session.add_custom_totem(
             default_totem["label"],
+            powers_text=default_totem.get("powers_text", ""),
+            special=default_totem.get("special", ""),
             image_filename=default_totem.get("image_filename"),
         )
         if key:
@@ -930,20 +947,17 @@ def roll_animation_script():
           if (panel) {{ panel.outerHTML = html; }}
         }});
     }}
-    function setMistralKey(){{
-      var el = document.getElementById('mistralKeyInput');
-      var key = el ? el.value.trim() : '';
-      if (!key) {{ return; }}
-      refreshAiPanel('/set_mistral_key', {{key: key}});
-    }}
     function clearMistralKey(){{
       if (!confirm("Retirer la cle et revenir au mode manuel (bouton copier) ?")) {{ return; }}
       refreshAiPanel('/clear_mistral_key');
     }}
     function resetAiConversation(){{
-      if (!confirm("Effacer la conversation avec l'IA (l'histoire generee automatiquement) ? "
-                   + "Le reste de la partie (des, jauges, quetes) n'est pas touche.")) {{ return; }}
-      refreshAiPanel('/reset_ai_conversation');
+      if (!confirm("Reinitialiser TOUTE la partie (des, jauges, menace, "
+                   + "quetes, totems et conversation IA) et revenir a l'etat "
+                   + "de l'installation de l'application ? Cette action est "
+                   + "irreversible.")) {{ return; }}
+      fetch('/reset_ai_conversation', {{method: 'POST'}})
+        .then(function(){{ window.location.reload(); }});
     }}
     function sendFullPromptToAi(){{
       showAiWritingIndicator();
@@ -1241,17 +1255,13 @@ def render_ai_panel_html(transient_error=None):
         return (
             '<div id="aiStoryPanel">'
             '<p class="sub" style="margin:0 0 10px 0;">'
-            "Colle ici une cle API Mistral gratuite (compte gratuit sur "
-            '<a href="https://console.mistral.ai/" target="_blank" rel="noopener" '
-            'style="color:var(--blue);">console.mistral.ai</a>, email + mot de passe, '
-            "sans carte bancaire) pour que l'histoire s'ecrive ici automatiquement, "
-            "a chaque lancer."
+            "Aucune cle API Mistral configuree pour l'instant -- l'histoire "
+            "ne s'ecrit donc pas ici automatiquement (le bouton \"copier le "
+            "prompt complet\" plus bas reste disponible en mode manuel)."
             "</p>"
-            '<input type="password" id="mistralKeyInput" placeholder="Cle API Mistral" '
-            'style="width:100%; padding:10px; border-radius:8px; border:2px solid var(--ink); '
-            'margin-bottom:8px; font-family:monospace; box-sizing:border-box;">'
-            '<button type="button" onclick="setMistralKey()">'
-            '&#128273; Activer la narration automatique</button>'
+            f'<a class="btn" href="{url_for("configure_key_page")}" '
+            'style="display:inline-block; text-decoration:none;">'
+            '&#128273; Configurer la cle API</a>'
             '</div>'
         )
 
@@ -1290,7 +1300,7 @@ def render_ai_panel_html(transient_error=None):
         + '<button type="button" onclick="sendAiMessage()">&#9993;&#65039; Envoyer a l\'IA</button>'
         + '<div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap;">'
         + '<button type="button" class="small secondary" onclick="resetAiConversation()">'
-        + '&#8635; Reinitialiser la conversation IA</button>'
+        + '&#8635; Reinitialiser toute la partie</button>'
         + '<button type="button" class="small danger" onclick="clearMistralKey()">'
         + '&#10060; Retirer la cle</button>'
         + '</div>'
@@ -1430,6 +1440,15 @@ def build_mechanics_context(auto_mode=False):
         lines.append("")
         lines.append(paragraph)
     lines.append("")
+    lines.append(
+        "TON DU RECIT : l'histoire s'adresse a un enfant -- ecris de maniere "
+        "vivante et chaleureuse, et parseme regulierement tes paragraphes de "
+        "quelques emojis/petites icones pertinentes (\u2728\U0001F31F\U0001F43E "
+        "etc.) pour illustrer les evenements et egayer le texte. Reste sobre : "
+        "quelques emojis bien places par paragraphe suffisent, jamais un "
+        "amoncellement d'icones qui alourdirait la reponse pour rien."
+    )
+    lines.append("")
     if auto_mode:
         lines.append(
             "ATTENDU DE TOI : histoire collaborative et immersive integrant directement "
@@ -1475,7 +1494,7 @@ def build_ai_kickoff_message():
 
     Sert a amorcer la conversation automatique sans attendre un premier
     lancer -- utile en tout debut d'aventure, ou pour la relancer avec le
-    contexte complet apres un "Reinitialiser la conversation IA"."""
+    contexte complet apres un "Reinitialiser toute la partie"."""
     lines = [build_mechanics_context(auto_mode=True)]
     story = session.story_log_text()
     if story:
@@ -1599,6 +1618,149 @@ def render_history_list_html():
         f'Copier le dernier lancer</button>'
         f'</div>'
     )
+
+
+def render_configure_key_page():
+    """Page de configuration de la cle API Mistral : affichee juste apres
+    le lancement de l'appli, avant meme le choix d'une histoire (voir
+    index() et KEY_PAGE_SEEN plus haut). Reste aussi accessible a tout
+    moment via son propre lien (route /configure_key), par exemple pour
+    changer ou retirer la cle plus tard -- la cle etant partagee entre
+    toutes les histoires, elle n'a plus besoin d'etre demandee une
+    deuxieme fois une fois configuree ici."""
+    key = get_mistral_key()
+    if key:
+        masked = ("*" * max(0, len(key) - 4)) + key[-4:]
+        status_html = f"""
+        <div class="key-status">
+          <div class="key-status-dot">&#9989;</div>
+          <div>
+            <div style="font-weight:800;">Narration automatique activee</div>
+            <div class="hint" style="margin-top:2px; font-family:monospace;">{masked}</div>
+          </div>
+        </div>
+        <a class="btn" href="{url_for('index')}">Continuer vers les histoires &#8594;</a>
+        <button type="button" class="btn secondary" onclick="toggleKeyForm()">Changer la cle</button>
+        <form method="post" action="{url_for('do_configure_key')}" onsubmit="return confirm('Retirer la cle API et revenir au mode manuel ?');" style="margin-top:8px;">
+          <input type="hidden" name="remove" value="1">
+          <button type="submit" class="btn danger">Retirer la cle</button>
+        </form>
+        <div id="keyFormBox" style="display:none; margin-top:16px; padding-top:16px; border-top:2px dashed var(--line);">
+          {_configure_key_form_fields()}
+        </div>
+        """
+    else:
+        status_html = f"""
+        <p class="hint" style="margin:0 0 12px 0; font-size:0.92rem;">
+          Colle ici une cle API Mistral gratuite (compte gratuit sur
+          <a href="https://console.mistral.ai/" target="_blank" rel="noopener"
+             style="color:var(--blue);">console.mistral.ai</a>, email + mot de
+          passe, sans carte bancaire) pour que l'histoire s'ecrive toute
+          seule a chaque lancer, quelle que soit l'histoire choisie
+          ensuite.
+        </p>
+        <form method="post" action="{url_for('do_configure_key')}">
+          {_configure_key_form_fields()}
+          <button type="submit" class="btn">&#128273; Activer la narration automatique</button>
+        </form>
+        <a class="btn secondary" href="{url_for('skip_key_page')}">Passer pour l'instant &#8594;</a>
+        """
+
+    return render_template_string(f"""
+    <!DOCTYPE html><html lang="fr"><head>
+    <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Cle API Mistral</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Nunito:wght@400;700;800&display=swap" rel="stylesheet">
+    <style>
+      :root{{--ink:#14161a; --paper:#fbf3e1; --red:#e0263c; --blue:#1d3fd6; --yellow:#ffcd3c; --line:rgba(20,22,26,0.15);}}
+      *{{box-sizing:border-box;}}
+      html,body{{margin:0; padding:0;}}
+      body{{
+        font-family:'Nunito',-apple-system,sans-serif; color:var(--ink);
+        background:#1b140c; padding-bottom:48px; min-height:100vh; min-height:100dvh;
+      }}
+      .hero{{width:100%; display:block; line-height:0;}}
+      .hero img{{width:100%; height:auto; display:block;}}
+      h1{{
+        font-family:'Bangers',cursive; color:#fff; font-size:1.6rem; text-align:center;
+        letter-spacing:1px; margin:16px 16px 14px 16px; text-shadow:0 2px 6px rgba(0,0,0,0.6);
+      }}
+      .card{{
+        background:var(--paper); border:3px solid var(--ink); border-radius:14px;
+        box-shadow:5px 5px 0 rgba(0,0,0,0.4); padding:20px;
+        max-width:480px; margin:0 16px 0 16px;
+      }}
+      @media (min-width:520px){{ .card{{margin:0 auto;}} }}
+      .hint{{font-size:0.82rem; opacity:0.75; font-weight:400;}}
+      input[type=password], input[type=text]{{
+        width:100%; font-family:monospace; font-size:1rem; padding:10px;
+        border:2px solid var(--ink); border-radius:8px; background:#fff; color:var(--ink);
+        margin-bottom:10px;
+      }}
+      .btn{{
+        display:block; width:100%; margin-top:10px; padding:14px; text-align:center;
+        font-family:'Bangers',cursive; font-size:1.15rem; letter-spacing:1px;
+        background:var(--red); color:#fff; border:3px solid var(--ink); border-radius:10px;
+        box-shadow:3px 3px 0 var(--ink); cursor:pointer; text-decoration:none;
+      }}
+      .btn:active{{transform:translate(2px,2px); box-shadow:1px 1px 0 var(--ink);}}
+      .btn.secondary{{background:#fff; color:var(--ink);}}
+      .btn.danger{{background:#8a1020;}}
+      .key-status{{
+        display:flex; align-items:center; gap:10px; margin-bottom:16px;
+        background:#fff8ea; border:2px solid var(--ink); border-radius:10px; padding:10px 12px;
+      }}
+      .key-status-dot{{font-size:1.3rem;}}
+    </style>
+    </head>
+    <body>
+      <div class="hero"><img src="data:image/jpeg;base64,{KEY_PAGE_BG_B64}" alt="Le Livre des Mille Histoires"></div>
+      <h1>&#128273; Cle API Mistral</h1>
+      <div class="card">
+        {status_html}
+      </div>
+      <script>
+        function toggleKeyForm(){{
+          var box = document.getElementById('keyFormBox');
+          if (box) {{ box.style.display = (box.style.display === 'none') ? 'block' : 'none'; }}
+        }}
+      </script>
+    </body></html>
+    """)
+
+
+def _configure_key_form_fields():
+    return (
+        '<input type="password" name="api_key" placeholder="Cle API Mistral" autocomplete="off">'
+    )
+
+
+@app.route("/configure_key")
+def configure_key_page():
+    global KEY_PAGE_SEEN
+    KEY_PAGE_SEEN = True
+    return render_configure_key_page()
+
+
+@app.route("/configure_key", methods=["POST"])
+def do_configure_key():
+    global KEY_PAGE_SEEN
+    KEY_PAGE_SEEN = True
+    if request.form.get("remove"):
+        clear_mistral_key()
+    else:
+        key = (request.form.get("api_key") or "").strip()
+        if key:
+            set_mistral_key(key)
+    return redirect(url_for("index"))
+
+
+@app.route("/skip_key_page")
+def skip_key_page():
+    global KEY_PAGE_SEEN
+    KEY_PAGE_SEEN = True
+    return redirect(url_for("index"))
 
 
 def render_story_selector_page():
@@ -1730,7 +1892,10 @@ def render_story_selector_page():
     </style>
     </head>
     <body>
-      <div class="page-header"><h1>&#127775; Choisis ton histoire</h1></div>
+      <div class="page-header">
+        <h1>&#127775; Choisis ton histoire</h1>
+        <a href="{url_for('configure_key_page')}" style="pointer-events:auto; position:absolute; top:18px; right:16px; color:#fff; opacity:0.85; text-decoration:none; font-size:1.3rem; text-shadow:0 2px 6px rgba(0,0,0,0.7);">&#128273;</a>
+      </div>
       <div class="carousel" id="carousel">
         {"".join(slides)}
       </div>
@@ -1861,6 +2026,13 @@ def render_create_story_page(errors=None, values=None):
           <div class="hint">Affichee sur les faces du de de reussite pour cette histoire.</div>
           <input type="file" name="totem_image" accept="image/*" required>
 
+          <label>Pouvoirs du totem <span class="hint">(optionnel)</span></label>
+          <div class="hint">Separes par des virgules -- comme pour un totem ajoute en cours de partie.</div>
+          <input type="text" name="totem_powers" value="{esc(values.get('totem_powers'))}" placeholder="Ex : Vision nocturne, Discretion, Agilite">
+
+          <label>Capacite speciale <span class="hint">(optionnel)</span></label>
+          <input type="text" name="totem_special" value="{esc(values.get('totem_special'))}" placeholder="Ex : Une fois par aventure, devient invisible quelques secondes">
+
           <button type="submit" class="btn">Creer l'histoire et commencer &#8594;</button>
         </form>
         <a class="btn secondary" href="{url_for('change_story')}">&larr; Retour au choix des histoires</a>
@@ -1880,10 +2052,15 @@ def do_create_story():
     subtitle = (request.form.get("subtitle") or "").strip()
     lore_text = (request.form.get("lore_text") or "").strip()
     totem_label = (request.form.get("totem_label") or "").strip()
+    totem_powers = (request.form.get("totem_powers") or "").strip()
+    totem_special = (request.form.get("totem_special") or "").strip()
     bg_file = request.files.get("bg_image")
     totem_file = request.files.get("totem_image")
 
-    values = {"title": title, "subtitle": subtitle, "lore_text": lore_text, "totem_label": totem_label}
+    values = {
+        "title": title, "subtitle": subtitle, "lore_text": lore_text,
+        "totem_label": totem_label, "totem_powers": totem_powers, "totem_special": totem_special,
+    }
     errors = []
     if not title:
         errors.append("Le titre de l'histoire est obligatoire.")
@@ -1911,6 +2088,7 @@ def do_create_story():
         title=title, subtitle=subtitle, lore_text=lore_text,
         bg_image_bytes=bg_bytes, bg_image_ext=bg_ext,
         totem_label=totem_label, totem_image_filename=totem_image_filename,
+        totem_powers=totem_powers, totem_special=totem_special,
     )
 
     switch_story(slug)
@@ -1920,6 +2098,8 @@ def do_create_story():
 @app.route("/")
 def index():
     if CURRENT_STORY is None:
+        if not KEY_PAGE_SEEN:
+            return redirect(url_for("configure_key_page"))
         return render_story_selector_page()
 
     symbol_picker_html = render_symbol_picker_html()
@@ -2158,8 +2338,54 @@ def do_remove_custom_totem():
 
 @app.route("/reset_ai_conversation", methods=["POST"])
 def do_reset_ai_conversation():
-    session.reset_ai_conversation()
-    return render_ai_panel_html()
+    """Reinitialise l'histoire ACTIVE dans l'etat qu'elle avait a
+    l'installation de l'appli : conversation IA, mais aussi historique des
+    des, jauges totemiques, menace, quetes secondaires et totems
+    personnalises repartent de zero. Pour une histoire avec un seed fourni
+    (Animorph), on revient a ce seed plutot qu'a une partie totalement
+    vide ; pour les autres (Poudlard, histoires personnalisees), le totem
+    de depart est re-ajoute exactement comme au tout premier lancement.
+    Le reste de la page (jauges, menace, quetes...) ayant change en meme
+    temps que la conversation, le front-end recharge la page entiere apres
+    cet appel plutot que de ne rafraichir que le panneau IA."""
+    reset_story_to_origin()
+    return jsonify({"ok": True})
+
+
+def reset_story_to_origin():
+    """Reconstruit la sauvegarde de l'histoire active exactement comme au
+    tout premier lancement de l'appli : supprime la partie existante, puis
+    recopie le seed fourni (Animorph) ou re-ajoute le totem de depart
+    (Poudlard / histoires personnalisees) -- meme logique que la toute
+    premiere branche de switch_story(), reutilisee ici a la demande plutot
+    qu'au changement d'histoire."""
+    global session
+
+    story = CURRENT_STORY_CONFIG or {}
+
+    if os.path.exists(dice_engine.SAVE_FILE):
+        os.remove(dice_engine.SAVE_FILE)
+
+    seed_file = story.get("seed_state_file")
+    if seed_file and os.path.exists(seed_file):
+        shutil.copyfile(seed_file, dice_engine.SAVE_FILE)
+
+    new_session = DiceSession()
+    was_loaded = new_session.load()
+
+    default_totem = story.get("default_totem")
+    if not was_loaded and default_totem and default_totem.get("label"):
+        key = new_session.add_custom_totem(
+            default_totem["label"],
+            powers_text=default_totem.get("powers_text", ""),
+            special=default_totem.get("special", ""),
+            image_filename=default_totem.get("image_filename"),
+        )
+        if key:
+            new_session.pip_symbol = key
+
+    new_session.save()
+    session = new_session
 
 
 @app.route("/send_full_prompt", methods=["POST"])

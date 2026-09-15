@@ -300,11 +300,18 @@ def _save_custom_meta(meta_list):
 
 
 def create_custom_story(title, subtitle, lore_text, bg_image_bytes, bg_image_ext,
-                         totem_label, totem_image_filename):
+                         totem_label, totem_image_filename,
+                         totem_powers="", totem_special=""):
     """Cree une nouvelle histoire : enregistre son image de fond sur le
     disque et ajoute une entree dans CUSTOM_STORIES_FILE. Renvoie le slug
     attribue (utilise ensuite par dice_web.switch_story() pour y basculer
-    immediatement)."""
+    immediatement).
+
+    totem_powers / totem_special sont optionnels et suivent exactement le
+    meme format que pour un totem ajoute en cours de partie (voir
+    /add_custom_totem dans dice_web.py) : powers_text est une chaine de
+    pouvoirs separes par des virgules, special est une capacite unique en
+    texte libre."""
     title = (title or "").strip() or "Nouvelle histoire"
     slug = _slugify_story_title(title)
 
@@ -327,6 +334,8 @@ def create_custom_story(title, subtitle, lore_text, bg_image_bytes, bg_image_ext
         "bg_image_file": bg_filename,
         "totem_label": (totem_label or "Totem de depart").strip(),
         "totem_image_filename": totem_image_filename,
+        "totem_powers": (totem_powers or "").strip(),
+        "totem_special": (totem_special or "").strip(),
         "save_file": f"dice_state_{slug}.json",
     }
     meta_list = _load_custom_meta()
@@ -380,6 +389,8 @@ def _build_story_entry(meta):
         "default_totem": {
             "label": meta.get("totem_label") or "Totem de depart",
             "image_filename": meta.get("totem_image_filename"),
+            "powers_text": meta.get("totem_powers") or "",
+            "special": meta.get("totem_special") or "",
         },
     }
 
