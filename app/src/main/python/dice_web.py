@@ -1583,48 +1583,124 @@ def render_history_list_html():
 def render_story_selector_page():
     """Page de choix d'histoire : montree tant qu'aucune histoire n'a ete
     choisie dans cette session (premier lancement de l'appli), et
-    accessible a tout moment via le lien 'Changer d'histoire' du jeu."""
-    cards = []
-    for slug in stories.STORY_ORDER:
+    accessible a tout moment via le lien 'Changer d'histoire' du jeu.
+
+    Presentee comme un carrousel plein ecran : chaque histoire occupe tout
+    l'ecran, et on passe de l'une a l'autre en glissant le doigt
+    horizontalement (scroll-snap natif, sans dependance JS)."""
+    slides = []
+    dots = []
+    for i, slug in enumerate(stories.STORY_ORDER):
         story = stories.STORIES[slug]
         thumb = story.get("thumbnail_b64") or story["bg_image_b64"]
-        cards.append(f"""
-        <a href="{url_for('select_story', slug=slug)}" class="story-card">
-          <img src="data:image/jpeg;base64,{thumb}" alt="{story['title']}">
-          <div class="story-card-title">{story['title']}</div>
-          <div class="story-card-subtitle">{story['subtitle']}</div>
-        </a>
+        slides.append(f"""
+        <div class="slide">
+          <a href="{url_for('select_story', slug=slug)}" class="slide-link">
+            <img class="slide-bg" src="data:image/jpeg;base64,{thumb}" alt="{story['title']}">
+            <div class="slide-overlay"></div>
+            <div class="slide-content">
+              <div class="slide-title">{story['title']}</div>
+              <div class="slide-subtitle">{story['subtitle']}</div>
+              <div class="slide-cta">Toucher pour commencer &#8594;</div>
+            </div>
+          </a>
+        </div>
         """)
+        dots.append(f'<span class="dot{" active" if i == 0 else ""}"></span>')
     return render_template_string(f"""
     <!DOCTYPE html><html lang="fr"><head>
-    <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
     <title>Choisis ton histoire</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Nunito:wght@400;700;800&display=swap" rel="stylesheet">
     <style>
-      html,body{{margin:0; padding:0;}}
-      body{{
-        background:#14161a; font-family:'Nunito',sans-serif; color:#fff;
-        text-align:center; padding:28px 16px 40px 16px; box-sizing:border-box;
+      html,body{{margin:0; padding:0; height:100%; overflow:hidden; background:#000;}}
+      body{{font-family:'Nunito',sans-serif; color:#fff;}}
+
+      .page-header{{
+        position:fixed; top:0; left:0; right:0; z-index:5;
+        padding:18px 16px 0 16px; text-align:center; pointer-events:none;
       }}
-      h1{{font-family:'Bangers',cursive; font-size:2rem; letter-spacing:1px; margin:0 0 24px 0;}}
-      .story-grid{{display:flex; flex-direction:column; gap:20px; max-width:420px; margin:0 auto;}}
-      .story-card{{
-        display:block; text-decoration:none; color:#fff; overflow:hidden;
-        background:#000; position:relative; border-radius:16px;
-        border:3px solid rgba(255,255,255,0.25);
+      .page-header h1{{
+        font-family:'Bangers',cursive; font-size:1.4rem; margin:0;
+        letter-spacing:1px; text-shadow:0 2px 6px rgba(0,0,0,0.7);
       }}
-      .story-card img{{width:100%; height:240px; object-fit:cover; display:block; opacity:0.9;}}
-      .story-card-title{{font-family:'Bangers',cursive; font-size:1.7rem; padding:10px 0 2px 0; letter-spacing:0.5px;}}
-      .story-card-subtitle{{font-size:0.88rem; opacity:0.85; padding:0 16px 16px 16px; line-height:1.4;}}
-      .story-card:active{{transform:scale(0.98);}}
+
+      .carousel{{
+        display:flex; height:100vh; height:100dvh; width:100vw;
+        overflow-x:auto; overflow-y:hidden;
+        scroll-snap-type:x mandatory; -webkit-overflow-scrolling:touch;
+        scrollbar-width:none; -ms-overflow-style:none;
+      }}
+      .carousel::-webkit-scrollbar{{display:none;}}
+
+      .slide{{
+        flex:0 0 100vw; width:100vw; height:100vh; height:100dvh;
+        scroll-snap-align:start; scroll-snap-stop:always; position:relative;
+      }}
+      .slide-link{{
+        display:block; width:100%; height:100%; position:relative;
+        text-decoration:none; color:inherit;
+      }}
+      .slide-bg{{
+        position:absolute; inset:0; width:100%; height:100%;
+        object-fit:cover; display:block;
+      }}
+      .slide-overlay{{
+        position:absolute; inset:0;
+        background:linear-gradient(to bottom, rgba(0,0,0,0.25) 0%, rgba(0,0,0,0.05) 40%, rgba(0,0,0,0.9) 100%);
+      }}
+      .slide-content{{
+        position:absolute; left:0; right:0; bottom:0;
+        padding:0 28px 64px 28px; box-sizing:border-box; text-align:center;
+      }}
+      .slide-title{{
+        font-family:'Bangers',cursive; font-size:2.6rem; letter-spacing:1px;
+        margin:0 0 8px 0; text-shadow:0 2px 8px rgba(0,0,0,0.7);
+      }}
+      .slide-subtitle{{
+        font-size:1rem; opacity:0.92; line-height:1.5;
+        max-width:420px; margin:0 auto; text-shadow:0 1px 4px rgba(0,0,0,0.6);
+      }}
+      .slide-cta{{
+        margin-top:18px; font-size:0.8rem; opacity:0.75;
+        letter-spacing:0.5px; text-transform:uppercase;
+      }}
+
+      .dots{{
+        position:fixed; left:0; right:0; bottom:20px; z-index:5;
+        display:flex; justify-content:center; gap:8px; pointer-events:none;
+      }}
+      .dot{{
+        width:8px; height:8px; border-radius:50%;
+        background:rgba(255,255,255,0.35);
+        transition:background 0.2s, transform 0.2s;
+      }}
+      .dot.active{{background:#fff; transform:scale(1.3);}}
     </style>
     </head>
     <body>
-      <h1>&#127775; Choisis ton histoire</h1>
-      <div class="story-grid">
-        {"".join(cards)}
+      <div class="page-header"><h1>&#127775; Choisis ton histoire</h1></div>
+      <div class="carousel" id="carousel">
+        {"".join(slides)}
       </div>
+      <div class="dots" id="dots">
+        {"".join(dots)}
+      </div>
+      <script>
+        (function() {{
+          var carousel = document.getElementById('carousel');
+          var dots = document.querySelectorAll('#dots .dot');
+          function updateActiveDot() {{
+            if (!carousel.clientWidth) return;
+            var idx = Math.round(carousel.scrollLeft / carousel.clientWidth);
+            dots.forEach(function(d, i) {{ d.classList.toggle('active', i === idx); }});
+          }}
+          carousel.addEventListener('scroll', function() {{
+            window.requestAnimationFrame(updateActiveDot);
+          }}, {{ passive: true }});
+        }})();
+      </script>
     </body></html>
     """)
 
