@@ -1,0 +1,69 @@
+{
+  "history": [
+    {
+      "id": 1,
+      "type": "success",
+      "success": 6,
+      "fate": null,
+      "note": "",
+      "pip_choice": [
+        "loup",
+        "loup",
+        "loup",
+        "loup",
+        "loup",
+        "loup"
+      ],
+      "pip_mode": "single",
+      "threat_triggered": false
+    },
+    {
+      "id": 2,
+      "type": "fate",
+      "success": null,
+      "fate": "exclamation",
+      "note": "",
+      "side_quest": null
+    }
+  ],
+  "next_id": 3,
+  "pip_symbol": "loup",
+  "pip_mode": "single",
+  "enabled_symbols": [
+    "loup",
+    "renard",
+    "jaguar",
+    "bond",
+    "profondeurs",
+    "patte",
+    "bouclier",
+    "etoile",
+    "araignee",
+    "aigle"
+  ],
+  "allowed_success_values": [
+    6
+  ],
+  "totem_energy": {
+    "araignee": 0,
+    "aigle": 0,
+    "loup": 6,
+    "renard": 0,
+    "jaguar": 0,
+    "bond": 0,
+    "profondeurs": 0,
+    "patte": 0,
+    "bouclier": 0,
+    "etoile": 0
+  },
+  "threat_level": 0,
+  "side_quests": [
+    {
+      "id": 1,
+      "kind": "ami",
+      "status": "terminee"
+    }
+  ],
+  "next_quest_id": 2,
+  "story_log": []
+}
