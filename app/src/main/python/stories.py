@@ -20,6 +20,7 @@ toucher au reste du code.
 
 from bg_animorph_data import BG_IMAGE_B64 as _ANIMORPH_BG
 from bg_poudlard_data import BG_IMAGE_B64 as _POUDLARD_BG
+from bg_poudlard_data import THUMBNAIL_B64 as _POUDLARD_THUMB
 
 
 # ---------------------------------------------------------------------
@@ -199,6 +200,7 @@ STORIES = {
         "subtitle": "Gabin explore la jungle, guide par ses totems.",
         "save_file": "dice_state_animorph.json",
         "bg_image_b64": _ANIMORPH_BG,
+        "thumbnail_b64": None,  # pas de vignette dediee : la carte utilise bg_image_b64
         "pip_symbols": ANIMORPH_PIP_SYMBOLS,
         "totems": ANIMORPH_TOTEMS,
         "default_pip_symbol": "araignee",
@@ -215,6 +217,7 @@ STORIES = {
         "subtitle": "Un nouvel eleve arrive a Poudlard, sans savoir encore ce qui l'attend.",
         "save_file": "dice_state_poudlard.json",
         "bg_image_b64": _POUDLARD_BG,
+        "thumbnail_b64": _POUDLARD_THUMB,
         "pip_symbols": POUDLARD_PIP_SYMBOLS,
         "totems": POUDLARD_TOTEMS,
         "default_pip_symbol": "baguette",
