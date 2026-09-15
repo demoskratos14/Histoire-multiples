@@ -40,7 +40,10 @@ def _ensure_story_selected():
     normalement jamais arriver en usage normal (l'interface de jeu n'est
     meme pas affichee tant qu'une histoire n'est pas choisie), mais reste
     une securite peu couteuse."""
-    if session is None and request.endpoint not in ("index", "select_story", "change_story"):
+    if session is None and request.endpoint not in (
+        "index", "select_story", "change_story",
+        "create_story_form", "do_create_story",
+    ):
         return redirect(url_for("index"))
 
 
@@ -114,7 +117,7 @@ def switch_story(slug):
     on peut y revenir plus tard sans rien perdre."""
     global CURRENT_STORY, CURRENT_STORY_CONFIG, session
 
-    story = stories.STORIES.get(slug)
+    story = stories.all_stories().get(slug)
     if not story:
         return False
 
@@ -142,7 +145,23 @@ def switch_story(slug):
         shutil.copyfile(seed_file, dice_engine.SAVE_FILE)
 
     new_session = DiceSession()
-    new_session.load()
+    was_loaded = new_session.load()
+
+    # Totem de depart d'une histoire personnalisee (voir stories.py /
+    # create_custom_story) : ajoute UNIQUEMENT au tout premier lancement
+    # de cette histoire (pas de sauvegarde existante), jamais rejoue au
+    # rechargement d'une partie en cours -- sinon on le dupliquerait a
+    # chaque fois qu'on revient sur cette histoire.
+    default_totem = story.get("default_totem")
+    if not was_loaded and default_totem and default_totem.get("label"):
+        key = new_session.add_custom_totem(
+            default_totem["label"],
+            image_filename=default_totem.get("image_filename"),
+        )
+        if key:
+            new_session.pip_symbol = key
+            new_session.save()
+
     session = new_session
     return True
 
@@ -1588,10 +1607,12 @@ def render_story_selector_page():
     Presentee comme un carrousel plein ecran : chaque histoire occupe tout
     l'ecran, et on passe de l'une a l'autre en glissant le doigt
     horizontalement (scroll-snap natif, sans dependance JS)."""
+    order = stories.all_story_order()
+    all_stories_map = stories.all_stories()
     slides = []
     dots = []
-    for i, slug in enumerate(stories.STORY_ORDER):
-        story = stories.STORIES[slug]
+    for i, slug in enumerate(order):
+        story = all_stories_map[slug]
         thumb = story.get("thumbnail_b64") or story["bg_image_b64"]
         slides.append(f"""
         <div class="slide">
@@ -1607,6 +1628,23 @@ def render_story_selector_page():
         </div>
         """)
         dots.append(f'<span class="dot{" active" if i == 0 else ""}"></span>')
+
+    # Derniere "diapositive" du carrousel : pas une histoire, mais un lien
+    # vers la page de creation d'une nouvelle histoire.
+    slides.append(f"""
+    <div class="slide">
+      <a href="{url_for('create_story_form')}" class="slide-link new-story-link">
+        <div class="slide-overlay"></div>
+        <div class="slide-content">
+          <div class="new-story-icon">&#10133;</div>
+          <div class="slide-title">Nouvelle histoire</div>
+          <div class="slide-subtitle">Cree ton propre univers : image de fond, description, premier totem.</div>
+          <div class="slide-cta">Toucher pour creer &#8594;</div>
+        </div>
+      </a>
+    </div>
+    """)
+    dots.append('<span class="dot"></span>')
     return render_template_string(f"""
     <!DOCTYPE html><html lang="fr"><head>
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -1677,6 +1715,16 @@ def render_story_selector_page():
         transition:background 0.2s, transform 0.2s;
       }}
       .dot.active{{background:#fff; transform:scale(1.3);}}
+
+      .new-story-link{{
+        background:linear-gradient(160deg, #2a2118 0%, #14161a 100%);
+      }}
+      .new-story-icon{{
+        width:64px; height:64px; border-radius:50%; margin:0 auto 16px auto;
+        background:var(--yellow, #ffcd3c); color:#14161a;
+        display:flex; align-items:center; justify-content:center;
+        font-size:1.8rem; box-shadow:0 4px 14px rgba(0,0,0,0.5);
+      }}
     </style>
     </head>
     <body>
@@ -1707,7 +1755,7 @@ def render_story_selector_page():
 
 @app.route("/select_story/<slug>")
 def select_story(slug):
-    if slug in stories.STORIES:
+    if slug in stories.all_stories():
         switch_story(slug)
     return redirect(url_for("index"))
 
@@ -1719,6 +1767,152 @@ def change_story():
     qu'un nouveau choix n'a pas ete fait -- on peut annuler en revenant en
     arriere sans rien perdre."""
     return render_story_selector_page()
+
+
+def render_create_story_page(errors=None, values=None):
+    """Page 'Nouvelle histoire' : image de fond, courte description
+    d'univers (ajoutee au prompt envoye a l'IA, a la place de celle des
+    autres histoires), et image du premier totem (affichee comme
+    constellation sur le de de reussite). Page autonome, independante de
+    toute histoire active (comme le selecteur), pour rester accessible
+    avant meme qu'une histoire ait ete choisie."""
+    values = values or {}
+    error_html = ""
+    if errors:
+        items = "".join(f"<li>{e}</li>" for e in errors)
+        error_html = f'<div class="form-errors"><ul>{items}</ul></div>'
+
+    def esc(s):
+        return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+    return render_template_string(f"""
+    <!DOCTYPE html><html lang="fr"><head>
+    <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Nouvelle histoire</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Nunito:wght@400;700;800&display=swap" rel="stylesheet">
+    <style>
+      :root{{--ink:#14161a; --paper:#fbf3e1; --red:#e0263c; --blue:#1d3fd6; --yellow:#ffcd3c; --line:rgba(20,22,26,0.15);}}
+      *{{box-sizing:border-box;}}
+      html,body{{margin:0; padding:0;}}
+      body{{
+        font-family:'Nunito',-apple-system,sans-serif; color:var(--ink);
+        background:#2a2118; padding:20px 16px 48px 16px;
+      }}
+      h1{{font-family:'Bangers',cursive; color:#fff; font-size:1.7rem; text-align:center;
+          letter-spacing:1px; margin:6px 0 18px 0; text-shadow:0 2px 6px rgba(0,0,0,0.6);}}
+      .card{{
+        background:var(--paper); border:3px solid var(--ink); border-radius:14px;
+        box-shadow:5px 5px 0 rgba(0,0,0,0.4); padding:18px; max-width:520px; margin:0 auto 16px auto;
+      }}
+      label{{display:block; font-weight:800; margin:14px 0 6px 0;}}
+      label:first-child{{margin-top:0;}}
+      .hint{{font-size:0.82rem; opacity:0.75; margin-top:2px; font-weight:400;}}
+      input[type=text], textarea{{
+        width:100%; font-family:inherit; font-size:1rem; padding:10px;
+        border:2px solid var(--ink); border-radius:8px; background:#fff; color:var(--ink);
+      }}
+      textarea{{min-height:110px; resize:vertical;}}
+      input[type=file]{{
+        width:100%; font-family:inherit; font-size:0.95rem; padding:8px;
+        border:2px dashed var(--ink); border-radius:8px; background:#fff8ea;
+      }}
+      .btn{{
+        display:inline-block; width:100%; margin-top:20px; padding:14px; text-align:center;
+        font-family:'Bangers',cursive; font-size:1.2rem; letter-spacing:1px;
+        background:var(--red); color:#fff; border:3px solid var(--ink); border-radius:10px;
+        box-shadow:3px 3px 0 var(--ink); cursor:pointer; text-decoration:none;
+      }}
+      .btn:active{{transform:translate(2px,2px); box-shadow:1px 1px 0 var(--ink);}}
+      .btn.secondary{{background:#fff; color:var(--ink); box-shadow:none; margin-top:10px;}}
+      .form-errors{{
+        background:#fff0f0; border:2px solid var(--red); color:#8a1020;
+        border-radius:8px; padding:10px 14px; margin-bottom:14px; font-weight:700;
+      }}
+      .form-errors ul{{margin:0; padding-left:18px;}}
+    </style>
+    </head>
+    <body>
+      <h1>&#10024; Cree ta propre histoire</h1>
+      <div class="card">
+        {error_html}
+        <form method="post" action="{url_for('do_create_story')}" enctype="multipart/form-data">
+          <label>Titre de l'histoire</label>
+          <input type="text" name="title" value="{esc(values.get('title'))}" placeholder="Ex : La Foret des Chuchoteurs" required>
+
+          <label>Sous-titre <span class="hint">(optionnel, affiche sous le titre)</span></label>
+          <input type="text" name="subtitle" value="{esc(values.get('subtitle'))}" placeholder="Ex : Une aventure au coeur d'une foret enchantee">
+
+          <label>Image de fond</label>
+          <div class="hint">Utilisee comme fond de tout l'ecran de jeu pour cette histoire.</div>
+          <input type="file" name="bg_image" accept="image/*" required>
+
+          <label>Description de l'univers</label>
+          <div class="hint">Quelques phrases sur le monde, le ton, le personnage... Ajoutees au contexte envoye a l'IA narratrice, a la place de celui des autres histoires.</div>
+          <textarea name="lore_text" placeholder="Ex : L'aventure se deroule dans une foret magique peuplee d'esprits anciens...">{esc(values.get('lore_text'))}</textarea>
+
+          <label>Nom du premier totem</label>
+          <div class="hint">Ce totem sert de constellation sur le de de reussite, et de premiere jauge du jeu.</div>
+          <input type="text" name="totem_label" value="{esc(values.get('totem_label'))}" placeholder="Ex : Pierre-Lune" required>
+
+          <label>Image du premier totem</label>
+          <div class="hint">Affichee sur les faces du de de reussite pour cette histoire.</div>
+          <input type="file" name="totem_image" accept="image/*" required>
+
+          <button type="submit" class="btn">Creer l'histoire et commencer &#8594;</button>
+        </form>
+        <a class="btn secondary" href="{url_for('change_story')}">&larr; Retour au choix des histoires</a>
+      </div>
+    </body></html>
+    """)
+
+
+@app.route("/create_story")
+def create_story_form():
+    return render_create_story_page()
+
+
+@app.route("/create_story", methods=["POST"])
+def do_create_story():
+    title = (request.form.get("title") or "").strip()
+    subtitle = (request.form.get("subtitle") or "").strip()
+    lore_text = (request.form.get("lore_text") or "").strip()
+    totem_label = (request.form.get("totem_label") or "").strip()
+    bg_file = request.files.get("bg_image")
+    totem_file = request.files.get("totem_image")
+
+    values = {"title": title, "subtitle": subtitle, "lore_text": lore_text, "totem_label": totem_label}
+    errors = []
+    if not title:
+        errors.append("Le titre de l'histoire est obligatoire.")
+    if not lore_text:
+        errors.append("La description de l'univers est obligatoire.")
+    if not totem_label:
+        errors.append("Le nom du premier totem est obligatoire.")
+    if not bg_file or not bg_file.filename:
+        errors.append("Une image de fond est obligatoire.")
+    if not totem_file or not totem_file.filename:
+        errors.append("Une image pour le premier totem est obligatoire.")
+
+    if errors:
+        return render_create_story_page(errors=errors, values=values)
+
+    bg_bytes = bg_file.read()
+    bg_ext = bg_file.filename.rsplit(".", 1)[-1].lower() if "." in bg_file.filename else "jpg"
+    # L'image du totem passe par le mecanisme deja existant des totems
+    # ajoutes en cours de partie (meme dossier, memes extensions
+    # autorisees) -- switch_story() s'en servira comme totem de depart au
+    # tout premier lancement de cette histoire.
+    totem_image_filename = _save_totem_image(totem_file)
+
+    slug = stories.create_custom_story(
+        title=title, subtitle=subtitle, lore_text=lore_text,
+        bg_image_bytes=bg_bytes, bg_image_ext=bg_ext,
+        totem_label=totem_label, totem_image_filename=totem_image_filename,
+    )
+
+    switch_story(slug)
+    return redirect(url_for("index"))
 
 
 @app.route("/")
