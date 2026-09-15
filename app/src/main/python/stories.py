@@ -23,9 +23,20 @@ import json
 import os
 import re
 
+import image_utils
 from bg_animorph_data import BG_IMAGE_B64 as _ANIMORPH_BG
 from bg_poudlard_data import BG_IMAGE_B64 as _POUDLARD_BG
 from bg_poudlard_data import THUMBNAIL_B64 as _POUDLARD_THUMB
+
+# Toute image de fond integree passe desormais par le meme redimensionnement
+# que celui applique aux histoires personnalisees (voir image_utils.py et
+# create_custom_story() plus bas) -- corrige le cas de Poudlard (image trop
+# grosse pour s'afficher) SANS avoir besoin de modifier bg_poudlard_data.py :
+# ne change rien pour Animorph, dont l'image etait deja d'une taille
+# raisonnable.
+_ANIMORPH_BG = image_utils.resize_bg_b64(_ANIMORPH_BG)
+_POUDLARD_BG = image_utils.resize_bg_b64(_POUDLARD_BG)
+_POUDLARD_THUMB = image_utils.resize_bg_b64(_POUDLARD_THUMB)
 
 
 # ---------------------------------------------------------------------
@@ -300,9 +311,12 @@ def create_custom_story(title, subtitle, lore_text, bg_image_bytes, bg_image_ext
     slug = _slugify_story_title(title)
 
     os.makedirs(CUSTOM_STORY_BG_DIR, exist_ok=True)
-    ext = (bg_image_ext or "jpg").lower().lstrip(".")
-    if ext not in ALLOWED_BG_IMAGE_EXTS:
-        ext = "jpg"
+    # Redimensionnee/recompressee ici (meme mecanique que pour Animorph et
+    # Poudlard ci-dessus) : une photo de telephone non retouchee etait la
+    # cause du "trop grosse pour etre visible" sur les histoires creees
+    # depuis l'application. Toujours reencodee en JPEG par ce traitement.
+    bg_image_bytes = image_utils.resize_bg_bytes(bg_image_bytes)
+    ext = "jpg"
     bg_filename = f"{slug}.{ext}"
     with open(os.path.join(CUSTOM_STORY_BG_DIR, bg_filename), "wb") as f:
         f.write(bg_image_bytes)

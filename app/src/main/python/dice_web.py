@@ -23,6 +23,7 @@ from flask import Flask, request, redirect, url_for, render_template_string, jso
 import dice_engine
 from dice_engine import (DiceSession, FATE_FACES, FATE_BY_KEY, SUCCESS_LABELS,
                           PIP_SYMBOLS, TOTEM_ENERGY_THRESHOLD, THREAT_THRESHOLD)
+import image_utils
 import mistral_client
 import stories
 
@@ -2049,14 +2050,29 @@ def do_clear_mistral_key():
 @app.route("/totem_images/<path:filename>")
 def totem_image(filename):
     """Sert les images de totems ajoutees par le joueur, sauvegardees en
-    local sur l'appareil (jamais envoyees ailleurs)."""
-    return send_from_directory(TOTEM_IMAGES_DIR, filename)
+    local sur l'appareil (jamais envoyees ailleurs).
+
+    IMPORTANT : Flask resout un chemin de dossier RELATIF (comme
+    TOTEM_IMAGES_DIR) par rapport au dossier d'installation de
+    l'application (current_app.root_path), PAS par rapport au repertoire
+    de travail courant (celui bascule sur le stockage interne inscriptible
+    par android_bridge.start_server()). Sur Android, ces deux dossiers
+    sont differents : les images sont bien ECRITES dans le stockage
+    interne (_save_totem_image ci-dessous utilise un chemin relatif classique,
+    non affecte par ce souci), mais Flask allait ensuite les chercher au
+    mauvais endroit pour les SERVIR -- d'ou l'icone cassee. On force donc
+    ici un chemin absolu, calcule par rapport au repertoire de travail
+    courant, pour que lecture et ecriture pointent toujours au meme endroit.
+    """
+    return send_from_directory(os.path.abspath(TOTEM_IMAGES_DIR), filename)
 
 
 def _save_totem_image(file_storage):
     """Sauvegarde une image de totem uploadee, avec un nom de fichier
     genere (pour eviter toute collision), et renvoie ce nom de fichier
-    (ou None si aucun fichier valide n'a ete fourni)."""
+    (ou None si aucun fichier valide n'a ete fourni). L'image est
+    redimensionnee/recompressee au passage (voir image_utils.py) -- elle
+    n'a besoin que d'etre nette a une taille d'icone (1em/1.15rem)."""
     if not file_storage or not file_storage.filename:
         return None
     ext = ""
@@ -2064,9 +2080,14 @@ def _save_totem_image(file_storage):
         ext = file_storage.filename.rsplit(".", 1)[-1].lower()
     if ext not in ALLOWED_TOTEM_IMAGE_EXTS:
         ext = "png"
+    raw_bytes = file_storage.read()
+    resized_bytes, resized_ext = image_utils.resize_totem_bytes(raw_bytes)
+    if resized_ext:
+        ext = resized_ext
     os.makedirs(TOTEM_IMAGES_DIR, exist_ok=True)
     filename = f"{uuid.uuid4().hex}.{ext}"
-    file_storage.save(os.path.join(TOTEM_IMAGES_DIR, filename))
+    with open(os.path.join(TOTEM_IMAGES_DIR, filename), "wb") as f:
+        f.write(resized_bytes)
     return filename
 
 
