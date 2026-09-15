@@ -2047,6 +2047,33 @@ def do_clear_mistral_key():
     return render_ai_panel_html()
 
 
+@app.route("/debug_images")
+def debug_images():
+    """Route de diagnostic (pas un lien visible dans l'appli) : ouvre
+    cette adresse dans un navigateur normal du telephone (Chrome...)
+    pendant que l'appli tourne en fond -- ex. http://127.0.0.1:5011/debug_images
+    (adapter le port a android_bridge.PORT) -- pour verifier directement
+    si Pillow est actif et quelle taille fait reellement l'image de fond
+    de l'histoire en cours, sans avoir besoin d'un cable/logcat."""
+    info = {
+        "pillow_disponible": image_utils._PIL_AVAILABLE,
+        "histoire_active": CURRENT_STORY,
+    }
+    bg = (CURRENT_STORY_CONFIG or {}).get("bg_image_b64") or ""
+    info["bg_base64_longueur_caracteres"] = len(bg)
+    if bg:
+        try:
+            raw = __import__("base64").b64decode(bg)
+            info["bg_taille_octets"] = len(raw)
+            if image_utils._PIL_AVAILABLE:
+                from PIL import Image
+                img = Image.open(__import__("io").BytesIO(raw))
+                info["bg_dimensions_pixels"] = list(img.size)
+        except Exception as e:
+            info["erreur_decodage"] = str(e)
+    return jsonify(info)
+
+
 @app.route("/totem_images/<path:filename>")
 def totem_image(filename):
     """Sert les images de totems ajoutees par le joueur, sauvegardees en
