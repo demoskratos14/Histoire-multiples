@@ -76,9 +76,10 @@ APP_CONFIG_FILE = "app_config.json"
 
 # Sauvegarde de la page "Des classiques" (voir plus bas) : totalement
 # independante des histoires et de dice_engine -- juste un historique de
-# lancers de 1 ou 2 des a 6 faces, points classiques, pour un usage en
-# partie papier. Un seul fichier partage, comme la cle API, puisque cette
-# page n'appartient a aucune histoire en particulier.
+# lancers du de de reussite (1-6, points classiques) et/ou du de du destin
+# (6 symboles fixes, voir FATE_FACES), pour un usage en partie papier. Un
+# seul fichier partage, comme la cle API, puisque cette page n'appartient
+# a aucune histoire en particulier.
 CLASSIC_DICE_STATE_FILE = "classic_dice_state.json"
 CLASSIC_DICE_MAX_HISTORY = 30  # au-dela, les lancers les plus anciens sont oublies
 
@@ -100,19 +101,39 @@ def save_classic_dice_state(state):
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
-def roll_classic_dice(nb_dice):
-    """Lance 1 ou 2 des a 6 faces (points classiques) et enregistre le
+def roll_classic_dice(kind):
+    """Lance le de de reussite (kind="success"), le de du destin
+    (kind="fate"), ou les deux ensemble (kind="both"), et enregistre le
     resultat dans l'historique (voir CLASSIC_DICE_STATE_FILE), en gardant
-    au plus CLASSIC_DICE_MAX_HISTORY entrees. Renvoie la liste des valeurs
-    tirees (longueur 1 ou 2)."""
-    values = [random.randint(1, 6) for _ in range(nb_dice)]
+    au plus CLASSIC_DICE_MAX_HISTORY entrees. Renvoie l'entree creee."""
     state = load_classic_dice_state()
-    entry = {"id": state["next_id"], "values": values}
+    entry = {
+        "id": state["next_id"],
+        "success": random.randint(1, 6) if kind in ("success", "both") else None,
+        "fate": random.choice(FATE_FACES)["key"] if kind in ("fate", "both") else None,
+    }
     state["next_id"] += 1
     state["history"].append(entry)
     state["history"] = state["history"][-CLASSIC_DICE_MAX_HISTORY:]
     save_classic_dice_state(state)
-    return values
+    return entry
+
+
+def _last_classic_dice_values(history):
+    """Parcourt l'historique a l'envers pour retrouver la derniere valeur
+    du de de reussite et la derniere du de du destin, meme si elles n'ont
+    pas ete tirees lors du meme lancer (ex: on relance seulement le de du
+    destin -- le de de reussite doit rester affiche avec sa valeur
+    precedente)."""
+    last_success, last_fate = None, None
+    for entry in reversed(history):
+        if last_success is None and entry.get("success") is not None:
+            last_success = entry["success"]
+        if last_fate is None and entry.get("fate") is not None:
+            last_fate = entry["fate"]
+        if last_success is not None and last_fate is not None:
+            break
+    return last_success, last_fate
 
 
 def clear_classic_dice_history():
@@ -1977,11 +1998,12 @@ def do_set_model():
 
 
 def _render_classic_die(value):
-    """Un seul de a points classiques (pas de symbole/constellation lie a
-    une histoire) : reutilise PIP_POSITIONS (grille 3x3 partagee avec les
-    des "de reussite" normaux) mais avec un simple point noir sur chaque
-    pip, quelle que soit l'histoire active ou meme si aucune n'est
-    active -- cette page est volontairement independante des histoires."""
+    """Le de de reussite (1-6, points classiques, pas de symbole/
+    constellation lie a une histoire) : reutilise PIP_POSITIONS (grille
+    3x3 partagee avec les des "de reussite" normaux) mais avec un simple
+    point noir sur chaque pip, quelle que soit l'histoire active ou meme
+    si aucune n'est active -- cette page est volontairement independante
+    des histoires."""
     if value is None:
         return '<div class="classic-die"></div>'
     positions = PIP_POSITIONS[value]
@@ -1994,30 +2016,39 @@ def _render_classic_die(value):
 
 def render_classic_dice_page():
     """Page "Des classiques" : totalement independante des histoires
-    (pas de totem, pas de constellation, pas de sauvegarde de partie) --
-    juste lancer 1 ou 2 des a 6 faces avec des points classiques, et
-    l'historique des lancers. Pensee pour servir d'aide-memoire pendant
-    une partie sur table (papier, plateau...), accessible directement
-    depuis le selecteur d'histoire sans avoir besoin d'en choisir une."""
+    (pas de totem, pas de sauvegarde de partie) -- le de de reussite
+    (1-6, points classiques) et le de du destin, comme sur les pages
+    d'histoire, avec l'historique des lancers. Pensee pour servir
+    d'aide-memoire pendant une partie sur table (papier, plateau...),
+    accessible directement depuis le selecteur d'histoire sans avoir
+    besoin de choisir une histoire."""
     state = load_classic_dice_state()
     history = state["history"]
+    last_success, last_fate = _last_classic_dice_values(history)
 
-    if history:
-        last = history[-1]
-        dice_html = "".join(_render_classic_die(v) for v in last["values"])
-        total = sum(last["values"])
-        total_html = f'<div class="classic-total">Total : {total}</div>' if len(last["values"]) > 1 else ""
-    else:
-        dice_html = _render_classic_die(None) + _render_classic_die(None)
-        total_html = ""
+    dice_html = (
+        f'<div style="text-align:center;">'
+        f'{_render_classic_die(last_success)}'
+        f'<div class="classic-die-caption">De classique</div>'
+        f'</div>'
+        f'<div style="text-align:center;">'
+        f'{render_fate_die(last_fate, used=True)}'
+        f'<div class="classic-die-caption">De du destin</div>'
+        f'</div>'
+    )
 
     if history:
         rows = []
         for entry in reversed(history):
-            values_text = " + ".join(str(v) for v in entry["values"])
-            total_text = f" = {sum(entry['values'])}" if len(entry["values"]) > 1 else ""
-            rows.append(f'<div class="classic-history-item">#{entry["id"]} &mdash; {values_text}{total_text}</div>')
-        history_html = "".join(rows)
+            bits = []
+            if entry.get("success") is not None:
+                bits.append(f"D\u00e9 classique={entry['success']}")
+            if entry.get("fate") is not None:
+                face = FATE_BY_KEY[entry["fate"]]
+                bits.append(f"Destin={face['emoji']} {face['label']}")
+            if bits:
+                rows.append(f'<div class="classic-history-item">#{entry["id"]} &mdash; ' + " | ".join(bits) + '</div>')
+        history_html = "".join(rows) if rows else '<p class="classic-hint">(aucun lancer pour l\'instant)</p>'
     else:
         history_html = '<p class="classic-hint">(aucun lancer pour l\'instant)</p>'
 
@@ -2028,7 +2059,7 @@ def render_classic_dice_page():
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Nunito:wght@400;700;800&display=swap" rel="stylesheet">
     <style>
-      :root{{--ink:#14161a; --paper:#fbf3e1; --red:#e0263c; --blue:#1d3fd6; --line:rgba(20,22,26,0.15);}}
+      :root{{--ink:#14161a; --paper:#fbf3e1; --red:#e0263c; --blue:#1d3fd6; --purple:#6a4c93; --line:rgba(20,22,26,0.15);}}
       *{{box-sizing:border-box;}}
       html,body{{margin:0; padding:0;}}
       body{{
@@ -2056,7 +2087,7 @@ def render_classic_dice_page():
         border-radius:14px; box-shadow:5px 5px 0 rgba(0,0,0,0.4); padding:20px;
         max-width:480px; margin:0 auto 16px auto;
       }}
-      .classic-dice-row{{display:flex; justify-content:center; gap:16px; margin-bottom:10px;}}
+      .classic-dice-row{{display:flex; justify-content:center; gap:16px; margin-bottom:6px; flex-wrap:wrap;}}
       .classic-die{{
         width:88px; height:88px; background:#fff; border:3px solid var(--ink);
         border-radius:14px; display:grid; grid-template-columns:repeat(3,1fr);
@@ -2066,7 +2097,31 @@ def render_classic_dice_page():
         width:14px; height:14px; border-radius:50%; background:var(--ink);
         justify-self:center; align-self:center;
       }}
+      .classic-die-caption{{
+        font-family:'Bangers',cursive; font-size:0.85rem; margin-top:6px; color:var(--ink); opacity:0.85;
+      }}
       .classic-total{{text-align:center; font-family:'Bangers',cursive; font-size:1.3rem; margin-bottom:6px;}}
+      /* Meme rendu que sur les pages d'histoire pour le de du destin
+         (voir render_fate_die / .die-box.fate plus haut dans le fichier),
+         reutilise ici tel quel. */
+      .die-box{{
+        width:150px; height:150px; background:#fff; border:4px solid var(--ink);
+        border-radius:14px; box-shadow:5px 5px 0 var(--ink);
+        display:grid; grid-template-columns:repeat(3,1fr); grid-template-rows:repeat(3,1fr);
+        padding:10px; transform:rotate(-1deg); overflow:hidden;
+      }}
+      .die-box.fate{{
+        display:flex; align-items:center; justify-content:center; flex-direction:column;
+        transform:rotate(1deg); background:#fff7e0;
+      }}
+      .die-box.die-dimmed{{opacity:0.35; filter:grayscale(0.7); transition:opacity 0.2s, filter 0.2s;}}
+      .fate-emoji{{font-size:3.6rem; line-height:1;}}
+      .fate-label{{font-family:'Bangers',cursive; font-size:1rem; color:var(--purple); margin-top:4px; text-align:center;}}
+      .emblem-placeholder{{
+        grid-column:1 / -1; grid-row:1 / -1;
+        width:100%; height:100%; display:flex; align-items:center; justify-content:center;
+      }}
+      .emblem-placeholder svg{{width:72%; height:72%; opacity:0.7;}}
       .btn{{
         display:block; width:100%; margin-top:10px; padding:14px; text-align:center;
         font-family:'Bangers',cursive; font-size:1.1rem; letter-spacing:1px;
@@ -2093,15 +2148,20 @@ def render_classic_dice_page():
 
         <div class="card">
           <div class="classic-dice-row">{dice_html}</div>
-          {total_html}
           <form method="post" action="{url_for('do_classic_dice_roll')}">
-            <input type="hidden" name="nb_dice" value="1">
-            <button type="submit" class="btn">Lancer 1 de</button>
+            <input type="hidden" name="kind" value="both">
+            <button type="submit" class="btn">&#9889; Lancer les deux d&eacute;s</button>
           </form>
-          <form method="post" action="{url_for('do_classic_dice_roll')}">
-            <input type="hidden" name="nb_dice" value="2">
-            <button type="submit" class="btn">Lancer 2 des</button>
-          </form>
+          <div style="display:flex; gap:10px;">
+            <form method="post" action="{url_for('do_classic_dice_roll')}" style="flex:1;">
+              <input type="hidden" name="kind" value="success">
+              <button type="submit" class="btn secondary">D&eacute; classique</button>
+            </form>
+            <form method="post" action="{url_for('do_classic_dice_roll')}" style="flex:1;">
+              <input type="hidden" name="kind" value="fate">
+              <button type="submit" class="btn secondary">D&eacute; du destin</button>
+            </form>
+          </div>
         </div>
 
         <div class="card">
@@ -2124,12 +2184,10 @@ def classic_dice_page():
 
 @app.route("/classic_dice/roll", methods=["POST"])
 def do_classic_dice_roll():
-    try:
-        nb_dice = int(request.form.get("nb_dice", "2"))
-    except (TypeError, ValueError):
-        nb_dice = 2
-    nb_dice = 1 if nb_dice not in (1, 2) else nb_dice
-    roll_classic_dice(nb_dice)
+    kind = request.form.get("kind", "both")
+    if kind not in ("success", "fate", "both"):
+        kind = "both"
+    roll_classic_dice(kind)
     return redirect(url_for("classic_dice_page"))
 
 
