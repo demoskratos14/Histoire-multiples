@@ -56,6 +56,6 @@ jobs:
       - name: Publier l'APK
         uses: actions/upload-artifact@v4
         with:
-          name: des-aventure-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: "Dés d'Aventure"
+          path: "app/build/outputs/apk/debug/Dés d'Aventure-debug.apk"
           if-no-files-found: error
