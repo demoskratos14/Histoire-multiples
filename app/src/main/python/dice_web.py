@@ -656,7 +656,15 @@ def _default_die_placeholder_html():
     coherent avec l'histoire choisie plutot que de montrer un embleme
     generique sans rapport."""
     has_seed = bool((CURRENT_STORY_CONFIG or {}).get("seed_state_file"))
-    default_symbol = (CURRENT_STORY_CONFIG or {}).get("default_pip_symbol")
+    # Pour une histoire personnalisee, default_pip_symbol est toujours vide
+    # dans stories.py (la cle du totem de depart n'est generee qu'au tout
+    # premier switch_story(), voir add_custom_totem() / stories.py) -- on se
+    # rabat alors sur session.pip_symbol, deja positionne sur ce totem a ce
+    # moment-la, plutot que de retomber sur l'embleme generique de
+    # l'application (qui n'a rien a voir avec l'histoire en cours).
+    default_symbol = (CURRENT_STORY_CONFIG or {}).get("default_pip_symbol") or (
+        session.pip_symbol if session else None
+    )
     if not has_seed and default_symbol:
         size = PIP_SIZE_BY_COUNT.get(1, "5.0rem")
         cell = f'<div class="pip pip-single">{render_pip_symbol(default_symbol)}</div>'

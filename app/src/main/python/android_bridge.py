@@ -22,16 +22,17 @@ Le WebView de MainActivity charge ensuite directement cette adresse : tout
 se passe a l'interieur de l'application, sans jamais ouvrir de navigateur
 externe.
 
-IMPORTANT -- pourquoi PORT n'est PAS 5001 ici :
+IMPORTANT -- a propos du choix du PORT :
 127.0.0.1 (la boucle locale) est partage par TOUT l'appareil Android, pas
 cloisonne par application comme le reste (stockage, memoire...). Si deux
 applications differentes essaient chacune de se brancher sur le meme port
 pendant qu'elles tournent toutes les deux en arriere-plan, la premiere a
 avoir demarre garde le port et la seconde ne peut plus se connecter --
-elle reste bloquee, comme si elle ne s'ouvrait plus. Cette version
-utilise donc un port different (5011) de celui de la toute premiere
-version (5001), pour que les deux applications puissent tourner en meme
-temps sans jamais se gener, meme laissees ouvertes toutes les deux en fond.
+elle reste bloquee, comme si elle ne s'ouvrait plus. Cette appli utilise
+le port 5001 (libere par un ancien prototype, depuis supprime) ; l'autre
+application installee en parallele utilise le port 5011 -- les deux
+peuvent ainsi tourner en meme temps sans jamais se gener, meme laissees
+ouvertes toutes les deux en fond.
 """
 
 import os
@@ -43,7 +44,7 @@ from os.path import dirname, join, exists
 # celui de toute autre variante de l'appli installee en parallele sur le
 # meme telephone -- voir l'explication ci-dessus. Doit correspondre
 # exactement a la valeur de "serverUrl" dans MainActivity.kt.
-PORT = 5011
+PORT = 5001
 
 _started = False
 _lock = threading.Lock()
