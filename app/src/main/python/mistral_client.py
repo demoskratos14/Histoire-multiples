@@ -21,9 +21,25 @@ import urllib.request
 import urllib.error
 
 API_URL = "https://api.mistral.ai/v1/chat/completions"
-DEFAULT_MODEL = "mistral-small-latest"   # couvert par le plan gratuit "La Plateforme"
+DEFAULT_MODEL = "mistral-small-2603"     # nom precis (plutot qu'un alias "-latest")
+                                          # pour garder un cout/comportement stable
+                                          # et previsible dans le temps
 DEFAULT_TIMEOUT = 40                     # secondes
 DEFAULT_MAX_TOKENS = 700
+
+# Modeles proposes dans le menu deroulant de dice_web.py (page de config
+# de la cle API). Chaque entree est (identifiant_exact_pour_l_API, label
+# affiche a l'utilisateur). Garder des noms de version precis (pas
+# d'alias "-latest") pour que le cout/comportement reste stable dans le
+# temps -- voir la remarque sur DEFAULT_MODEL ci-dessus.
+MODEL_CHOICES = [
+    ("ministral-8b-2512",
+     "Ministral 8B -- tres economique, style plus simple"),
+    ("mistral-small-2603",
+     "Mistral Small -- rapide et economique (recommande)"),
+    ("mistral-medium-latest",
+     "Mistral Medium -- histoires plus riches, un peu plus cher"),
+]
 
 
 def chat(api_key, messages, model=DEFAULT_MODEL,

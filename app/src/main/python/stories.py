@@ -344,6 +344,55 @@ def create_custom_story(title, subtitle, lore_text, bg_image_bytes, bg_image_ext
     return slug
 
 
+def delete_custom_story(slug):
+    """Supprime definitivement une histoire personnalisee : son entree
+    dans CUSTOM_STORIES_FILE, son image de fond, sa sauvegarde de partie
+    (dice_state_<slug>.json) et l'image de son totem de depart si elle en
+    avait une.
+
+    Ne touche JAMAIS aux histoires integrees (Animorph, Poudlard) : si le
+    slug fourni ne correspond a aucune histoire personnalisee (par
+    exemple parce que c'est une histoire integree, ou un slug inconnu),
+    ne fait rien et renvoie False. Renvoie True si une histoire a bien
+    ete supprimee."""
+    meta_list = _load_custom_meta()
+    meta = next((m for m in meta_list if m["slug"] == slug), None)
+    if meta is None:
+        return False
+
+    meta_list = [m for m in meta_list if m["slug"] != slug]
+    _save_custom_meta(meta_list)
+
+    bg_file = meta.get("bg_image_file")
+    if bg_file:
+        bg_path = os.path.join(CUSTOM_STORY_BG_DIR, bg_file)
+        if os.path.exists(bg_path):
+            os.remove(bg_path)
+
+    save_file = meta.get("save_file")
+    if save_file and os.path.exists(save_file):
+        os.remove(save_file)
+
+    # L'image du totem de depart est enregistree dans totem_images/ (voir
+    # _save_totem_image() dans dice_web.py), pas dans CUSTOM_STORY_BG_DIR --
+    # on la supprime aussi, puisqu'elle a ete creee specifiquement pour le
+    # totem de depart de CETTE histoire (jamais partagee avec une autre).
+    totem_image_filename = meta.get("totem_image_filename")
+    if totem_image_filename:
+        totem_image_path = os.path.join("totem_images", totem_image_filename)
+        if os.path.exists(totem_image_path):
+            os.remove(totem_image_path)
+
+    return True
+
+
+def is_custom_story(slug):
+    """Vrai si slug correspond a une histoire personnalisee (creee depuis
+    l'application), donc supprimable -- faux pour les histoires
+    integrees (Animorph, Poudlard) ou un slug inconnu."""
+    return any(m["slug"] == slug for m in _load_custom_meta())
+
+
 def _build_story_entry(meta):
     """Reconstruit une entree au meme format que celles de STORIES a
     partir des metadonnees d'une histoire personnalisee -- appele a
@@ -374,6 +423,7 @@ def _build_story_entry(meta):
         "protagonist_ref": "le personnage principal",
         "fixed_allies_line": "",
         "ally_help_text": {},
+        "is_custom": True,
         # La description d'univers fournie a la creation remplace, pour
         # cette histoire, tout ce qui concernait l'univers des autres
         # histoires (Marvel/Animorph, Harry Potter/Poudlard...) -- elle

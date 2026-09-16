@@ -53,7 +53,8 @@ def _ensure_story_selected():
         "index", "select_story", "change_story",
         "create_story_form", "do_create_story",
         "debug_images",
-        "configure_key_page", "do_configure_key", "skip_key_page",
+        "configure_key_page", "do_configure_key", "skip_key_page", "do_set_model",
+        "do_delete_story",
     ):
         return redirect(url_for("index"))
 
@@ -76,10 +77,13 @@ def load_app_config():
             with open(APP_CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
             if isinstance(data, dict):
-                return {"mistral_api_key": str(data.get("mistral_api_key") or "")}
+                return {
+                    "mistral_api_key": str(data.get("mistral_api_key") or ""),
+                    "mistral_model": str(data.get("mistral_model") or mistral_client.DEFAULT_MODEL),
+                }
         except (OSError, ValueError):
             pass
-    return {"mistral_api_key": ""}
+    return {"mistral_api_key": "", "mistral_model": mistral_client.DEFAULT_MODEL}
 
 
 def save_app_config(config):
@@ -92,15 +96,29 @@ def get_mistral_key():
 
 
 def set_mistral_key(key):
-    save_app_config({"mistral_api_key": (key or "").strip()})
+    config = load_app_config()
+    config["mistral_api_key"] = (key or "").strip()
+    save_app_config(config)
 
 
 def clear_mistral_key():
-    save_app_config({"mistral_api_key": ""})
+    config = load_app_config()
+    config["mistral_api_key"] = ""
+    save_app_config(config)
 
 
 def has_mistral_key():
     return bool(get_mistral_key())
+
+
+def get_mistral_model():
+    return load_app_config()["mistral_model"]
+
+
+def set_mistral_model(model):
+    config = load_app_config()
+    config["mistral_model"] = (model or "").strip() or mistral_client.DEFAULT_MODEL
+    save_app_config(config)
 
 
 # ---------------------------------------------------------------------
@@ -1333,7 +1351,8 @@ def run_ai_narrator(event_text):
     if not session.ai_conversation:
         session.add_ai_message("system", build_mechanics_context(auto_mode=True))
     session.add_ai_message("user", event_text)
-    text, error = mistral_client.chat(get_mistral_key(), session.ai_messages_to_send())
+    text, error = mistral_client.chat(get_mistral_key(), session.ai_messages_to_send(),
+                                       model=get_mistral_model())
     if error:
         return None, error
     session.add_ai_message("assistant", text)
@@ -1765,6 +1784,21 @@ def render_configure_key_page():
         <a class="btn secondary" href="{url_for('skip_key_page')}">Passer pour l'instant &#8594;</a>
         """
 
+    model_section_html = f"""
+    <div style="margin-top:16px; padding-top:16px; border-top:2px dashed var(--line);">
+      <div style="font-weight:800; margin-bottom:6px;">Modele utilise pour la narration</div>
+      <p class="hint" style="margin:0 0 10px 0;">
+        Plus le modele est riche, plus les histoires sont detaillees --
+        mais aussi (legerement) plus couteux sur ton forfait Mistral.
+        Modifiable a tout moment, meme en cours de partie.
+      </p>
+      <form method="post" action="{url_for('do_set_model')}">
+        {_model_select_field()}
+        <button type="submit" class="btn secondary">Enregistrer le modele</button>
+      </form>
+    </div>
+    """
+
     return render_template_string(f"""
     <!DOCTYPE html><html lang="fr"><head>
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -1818,6 +1852,7 @@ def render_configure_key_page():
       <h1>&#128273; Cle API Mistral</h1>
       <div class="card">
         {status_html}
+        {model_section_html}
       </div>
       <script>
         function toggleKeyForm(){{
@@ -1832,6 +1867,31 @@ def render_configure_key_page():
 def _configure_key_form_fields():
     return (
         '<input type="password" name="api_key" placeholder="Cle API Mistral" autocomplete="off">'
+    )
+
+
+def _model_select_field():
+    """Menu deroulant <select> propose sur la page de config de la cle,
+    pre-selectionne sur le modele actuellement enregistre dans
+    app_config.json (voir get_mistral_model() / MODEL_CHOICES dans
+    mistral_client.py)."""
+    current = get_mistral_model()
+    options = []
+    for value, label in mistral_client.MODEL_CHOICES:
+        selected = " selected" if value == current else ""
+        options.append(f'<option value="{value}"{selected}>{label}</option>')
+    # Si le modele enregistre ne fait pas partie de MODEL_CHOICES (ex.
+    # ancienne valeur "mistral-small-latest" d'avant cette mise a jour,
+    # ou modele choisi manuellement dans le fichier), on l'ajoute quand
+    # meme comme option pour ne pas le perdre silencieusement.
+    if current not in dict(mistral_client.MODEL_CHOICES):
+        options.insert(0, f'<option value="{current}" selected>{current} (actuel)</option>')
+    return (
+        '<select name="model" style="width:100%; font-size:1rem; padding:10px; '
+        'border:2px solid var(--ink); border-radius:8px; background:#fff; '
+        'color:var(--ink); margin-bottom:10px;">'
+        + "".join(options) +
+        "</select>"
     )
 
 
@@ -1853,6 +1913,19 @@ def do_configure_key():
         if key:
             set_mistral_key(key)
     return redirect(url_for("index"))
+
+
+@app.route("/set_model", methods=["POST"])
+def do_set_model():
+    """Enregistre le modele Mistral choisi dans le menu deroulant de la
+    page de config (partage entre toutes les histoires, comme la cle) --
+    pris en compte des le prochain appel a l'IA, sans rien redemarrer."""
+    global KEY_PAGE_SEEN
+    KEY_PAGE_SEEN = True
+    model = (request.form.get("model") or "").strip()
+    if model:
+        set_mistral_model(model)
+    return redirect(url_for("configure_key_page"))
 
 
 @app.route("/skip_key_page")
@@ -1877,6 +1950,20 @@ def render_story_selector_page():
     for i, slug in enumerate(order):
         story = all_stories_map[slug]
         thumb = story.get("thumbnail_b64") or story["bg_image_b64"]
+        delete_html = ""
+        if story.get("is_custom"):
+            # Poubelle affichee uniquement sur les histoires personnalisees
+            # -- jamais sur Animorph/Poudlard, qui font partie de l'appli.
+            # Placee en dehors du <a> (pas imbriquee dedans) et positionnee
+            # par-dessus grace a z-index, pour que le clic sur la poubelle
+            # ne declenche jamais la navigation "Toucher pour commencer".
+            delete_html = f"""
+            <form method="post" action="{url_for('do_delete_story', slug=slug)}"
+                  class="delete-story-form"
+                  onsubmit="return confirm('Supprimer definitivement {story['title']} ? La partie en cours, l\\'image de fond et le totem de depart associes seront effaces. Impossible a annuler.');">
+              <button type="submit" class="delete-story-btn" aria-label="Supprimer cette histoire" title="Supprimer cette histoire">&#128465;&#65039;</button>
+            </form>
+            """
         slides.append(f"""
         <div class="slide">
           <a href="{url_for('select_story', slug=slug)}" class="slide-link">
@@ -1888,6 +1975,7 @@ def render_story_selector_page():
               <div class="slide-cta">Toucher pour commencer &#8594;</div>
             </div>
           </a>
+          {delete_html}
         </div>
         """)
         dots.append(f'<span class="dot{" active" if i == 0 else ""}"></span>')
@@ -1988,6 +2076,18 @@ def render_story_selector_page():
         display:flex; align-items:center; justify-content:center;
         font-size:1.8rem; box-shadow:0 4px 14px rgba(0,0,0,0.5);
       }}
+
+      .delete-story-form{{
+        position:absolute; right:16px; bottom:16px; z-index:6; margin:0;
+      }}
+      .delete-story-btn{{
+        width:46px; height:46px; border-radius:50%;
+        background:rgba(20,22,26,0.65); border:2px solid rgba(255,255,255,0.55);
+        color:#fff; font-size:1.25rem; cursor:pointer;
+        display:flex; align-items:center; justify-content:center;
+        box-shadow:0 2px 8px rgba(0,0,0,0.4);
+      }}
+      .delete-story-btn:active{{background:rgba(138,16,32,0.9); transform:scale(0.95);}}
     </style>
     </head>
     <body>
@@ -2024,6 +2124,34 @@ def select_story(slug):
     if slug in stories.all_stories():
         switch_story(slug)
     return redirect(url_for("index"))
+
+
+@app.route("/delete_story/<slug>", methods=["POST"])
+def do_delete_story(slug):
+    """Supprime definitivement une histoire personnalisee (creee depuis
+    la page "Nouvelle histoire" du selecteur) : sa sauvegarde, son image
+    de fond, l'image de son totem de depart, et son entree dans
+    custom_stories.json (voir stories.delete_custom_story()).
+
+    Les histoires integrees (Animorph, Poudlard) ne sont jamais
+    supprimables par cette route : delete_custom_story() renvoie False
+    si le slug ne correspond a aucune histoire personnalisee, et on ne
+    fait rien de plus dans ce cas -- le bouton poubelle n'est de toute
+    facon affiche que sur les histoires personnalisees (voir
+    render_story_selector_page()), cette verification est une securite
+    supplementaire cote serveur.
+
+    Si l'histoire supprimee etait l'histoire active, on revient a aucune
+    histoire active (comme au tout premier lancement de l'appli) pour
+    forcer le retour au selecteur plutot que de continuer a jouer sur une
+    sauvegarde qui vient d'etre effacee."""
+    global CURRENT_STORY, CURRENT_STORY_CONFIG, session
+    stories.delete_custom_story(slug)
+    if CURRENT_STORY == slug:
+        CURRENT_STORY = None
+        CURRENT_STORY_CONFIG = {}
+        session = None
+    return redirect(url_for("change_story"))
 
 
 @app.route("/change_story")
