@@ -16,6 +16,7 @@ Lancement :
 import json
 import math
 import os
+import random
 import shutil
 import uuid
 from flask import Flask, request, redirect, url_for, render_template_string, jsonify, send_from_directory
@@ -27,6 +28,8 @@ import image_utils
 import mistral_client
 import stories
 from bg_key_page_data import BG_IMAGE_B64 as KEY_PAGE_BG_B64
+from bg_classic_dice_data import BG_IMAGE_B64 as CLASSIC_DICE_BG_B64
+from dice_icon_data import ICON_B64 as CLASSIC_DICE_ICON_B64
 
 # Note : contrairement aux images de fond des histoires (voir stories.py),
 # cette image n'est PAS passee par image_utils.resize_bg_b64() -- elle
@@ -54,7 +57,8 @@ def _ensure_story_selected():
         "create_story_form", "do_create_story",
         "debug_images",
         "configure_key_page", "do_configure_key", "skip_key_page", "do_set_model",
-        "do_delete_story",
+        "do_delete_story", "classic_dice_page", "do_classic_dice_roll",
+        "do_classic_dice_clear",
     ):
         return redirect(url_for("index"))
 
@@ -69,6 +73,50 @@ ALLOWED_TOTEM_IMAGE_EXTS = {"png", "jpg", "jpeg", "gif", "webp"}
 # particulier) : pour l'instant, seulement la cle API Mistral, partagee
 # entre toutes les histoires (un seul compte gratuit suffit largement).
 APP_CONFIG_FILE = "app_config.json"
+
+# Sauvegarde de la page "Des classiques" (voir plus bas) : totalement
+# independante des histoires et de dice_engine -- juste un historique de
+# lancers de 1 ou 2 des a 6 faces, points classiques, pour un usage en
+# partie papier. Un seul fichier partage, comme la cle API, puisque cette
+# page n'appartient a aucune histoire en particulier.
+CLASSIC_DICE_STATE_FILE = "classic_dice_state.json"
+CLASSIC_DICE_MAX_HISTORY = 30  # au-dela, les lancers les plus anciens sont oublies
+
+
+def load_classic_dice_state():
+    if os.path.exists(CLASSIC_DICE_STATE_FILE):
+        try:
+            with open(CLASSIC_DICE_STATE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict) and isinstance(data.get("history"), list):
+                return data
+        except (OSError, ValueError):
+            pass
+    return {"history": [], "next_id": 1}
+
+
+def save_classic_dice_state(state):
+    with open(CLASSIC_DICE_STATE_FILE, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, indent=2)
+
+
+def roll_classic_dice(nb_dice):
+    """Lance 1 ou 2 des a 6 faces (points classiques) et enregistre le
+    resultat dans l'historique (voir CLASSIC_DICE_STATE_FILE), en gardant
+    au plus CLASSIC_DICE_MAX_HISTORY entrees. Renvoie la liste des valeurs
+    tirees (longueur 1 ou 2)."""
+    values = [random.randint(1, 6) for _ in range(nb_dice)]
+    state = load_classic_dice_state()
+    entry = {"id": state["next_id"], "values": values}
+    state["next_id"] += 1
+    state["history"].append(entry)
+    state["history"] = state["history"][-CLASSIC_DICE_MAX_HISTORY:]
+    save_classic_dice_state(state)
+    return values
+
+
+def clear_classic_dice_history():
+    save_classic_dice_state({"history": [], "next_id": 1})
 
 
 def load_app_config():
@@ -1928,6 +1976,169 @@ def do_set_model():
     return redirect(url_for("configure_key_page"))
 
 
+def _render_classic_die(value):
+    """Un seul de a points classiques (pas de symbole/constellation lie a
+    une histoire) : reutilise PIP_POSITIONS (grille 3x3 partagee avec les
+    des "de reussite" normaux) mais avec un simple point noir sur chaque
+    pip, quelle que soit l'histoire active ou meme si aucune n'est
+    active -- cette page est volontairement independante des histoires."""
+    if value is None:
+        return '<div class="classic-die"></div>'
+    positions = PIP_POSITIONS[value]
+    dots = "".join(
+        f'<div class="classic-pip" style="grid-row:{r}; grid-column:{c};"></div>'
+        for (r, c) in positions
+    )
+    return f'<div class="classic-die">{dots}</div>'
+
+
+def render_classic_dice_page():
+    """Page "Des classiques" : totalement independante des histoires
+    (pas de totem, pas de constellation, pas de sauvegarde de partie) --
+    juste lancer 1 ou 2 des a 6 faces avec des points classiques, et
+    l'historique des lancers. Pensee pour servir d'aide-memoire pendant
+    une partie sur table (papier, plateau...), accessible directement
+    depuis le selecteur d'histoire sans avoir besoin d'en choisir une."""
+    state = load_classic_dice_state()
+    history = state["history"]
+
+    if history:
+        last = history[-1]
+        dice_html = "".join(_render_classic_die(v) for v in last["values"])
+        total = sum(last["values"])
+        total_html = f'<div class="classic-total">Total : {total}</div>' if len(last["values"]) > 1 else ""
+    else:
+        dice_html = _render_classic_die(None) + _render_classic_die(None)
+        total_html = ""
+
+    if history:
+        rows = []
+        for entry in reversed(history):
+            values_text = " + ".join(str(v) for v in entry["values"])
+            total_text = f" = {sum(entry['values'])}" if len(entry["values"]) > 1 else ""
+            rows.append(f'<div class="classic-history-item">#{entry["id"]} &mdash; {values_text}{total_text}</div>')
+        history_html = "".join(rows)
+    else:
+        history_html = '<p class="classic-hint">(aucun lancer pour l\'instant)</p>'
+
+    return render_template_string(f"""
+    <!DOCTYPE html><html lang="fr"><head>
+    <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <title>Des classiques</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Bangers&family=Nunito:wght@400;700;800&display=swap" rel="stylesheet">
+    <style>
+      :root{{--ink:#14161a; --paper:#fbf3e1; --red:#e0263c; --blue:#1d3fd6; --line:rgba(20,22,26,0.15);}}
+      *{{box-sizing:border-box;}}
+      html,body{{margin:0; padding:0;}}
+      body{{
+        font-family:'Nunito',-apple-system,sans-serif; color:#fff;
+        min-height:100vh; min-height:100dvh; padding-bottom:48px;
+        background:#000 url('data:image/jpeg;base64,{CLASSIC_DICE_BG_B64}') center/cover fixed no-repeat;
+      }}
+      .scrim{{
+        min-height:100vh; min-height:100dvh;
+        background:linear-gradient(to bottom, rgba(0,0,0,0.55) 0%, rgba(0,0,0,0.35) 30%, rgba(10,8,6,0.85) 100%);
+        padding:18px 16px 32px 16px;
+      }}
+      .top-nav{{display:flex; align-items:center; gap:10px; margin-bottom:14px;}}
+      .back-link{{
+        color:#fff; text-decoration:none; font-size:1.4rem; text-shadow:0 2px 6px rgba(0,0,0,0.7);
+        display:flex; align-items:center; justify-content:center;
+        width:40px; height:40px; border-radius:50%; background:rgba(20,22,26,0.5);
+      }}
+      h1{{
+        font-family:'Bangers',cursive; font-size:1.5rem; margin:0; letter-spacing:1px;
+        text-shadow:0 2px 6px rgba(0,0,0,0.7);
+      }}
+      .card{{
+        background:var(--paper); color:var(--ink); border:3px solid var(--ink);
+        border-radius:14px; box-shadow:5px 5px 0 rgba(0,0,0,0.4); padding:20px;
+        max-width:480px; margin:0 auto 16px auto;
+      }}
+      .classic-dice-row{{display:flex; justify-content:center; gap:16px; margin-bottom:10px;}}
+      .classic-die{{
+        width:88px; height:88px; background:#fff; border:3px solid var(--ink);
+        border-radius:14px; display:grid; grid-template-columns:repeat(3,1fr);
+        grid-template-rows:repeat(3,1fr); padding:10px; box-shadow:2px 2px 0 rgba(0,0,0,0.25);
+      }}
+      .classic-pip{{
+        width:14px; height:14px; border-radius:50%; background:var(--ink);
+        justify-self:center; align-self:center;
+      }}
+      .classic-total{{text-align:center; font-family:'Bangers',cursive; font-size:1.3rem; margin-bottom:6px;}}
+      .btn{{
+        display:block; width:100%; margin-top:10px; padding:14px; text-align:center;
+        font-family:'Bangers',cursive; font-size:1.1rem; letter-spacing:1px;
+        background:var(--red); color:#fff; border:3px solid var(--ink); border-radius:10px;
+        box-shadow:3px 3px 0 var(--ink); cursor:pointer; text-decoration:none;
+      }}
+      .btn:active{{transform:translate(2px,2px); box-shadow:1px 1px 0 var(--ink);}}
+      .btn.secondary{{background:#fff; color:var(--ink);}}
+      .btn.danger{{background:#fff; color:#8a1020;}}
+      .classic-hint{{opacity:0.7; font-size:0.9rem; text-align:center;}}
+      .classic-history{{max-height:240px; overflow-y:auto; margin-top:4px;}}
+      .classic-history-item{{
+        padding:8px 4px; border-bottom:1px solid var(--line); font-family:monospace; font-size:0.95rem;
+      }}
+      .classic-history-item:last-child{{border-bottom:none;}}
+    </style>
+    </head>
+    <body>
+      <div class="scrim">
+        <div class="top-nav">
+          <a href="{url_for('change_story')}" class="back-link" aria-label="Retour">&#8592;</a>
+          <h1>&#127922; Des classiques</h1>
+        </div>
+
+        <div class="card">
+          <div class="classic-dice-row">{dice_html}</div>
+          {total_html}
+          <form method="post" action="{url_for('do_classic_dice_roll')}">
+            <input type="hidden" name="nb_dice" value="1">
+            <button type="submit" class="btn">Lancer 1 de</button>
+          </form>
+          <form method="post" action="{url_for('do_classic_dice_roll')}">
+            <input type="hidden" name="nb_dice" value="2">
+            <button type="submit" class="btn">Lancer 2 des</button>
+          </form>
+        </div>
+
+        <div class="card">
+          <div style="font-weight:800; margin-bottom:8px;">Historique</div>
+          <div class="classic-history">{history_html}</div>
+          <form method="post" action="{url_for('do_classic_dice_clear')}"
+                onsubmit="return confirm('Effacer tout l\\'historique des des classiques ?');">
+            <button type="submit" class="btn danger">Effacer l'historique</button>
+          </form>
+        </div>
+      </div>
+    </body></html>
+    """)
+
+
+@app.route("/classic_dice")
+def classic_dice_page():
+    return render_classic_dice_page()
+
+
+@app.route("/classic_dice/roll", methods=["POST"])
+def do_classic_dice_roll():
+    try:
+        nb_dice = int(request.form.get("nb_dice", "2"))
+    except (TypeError, ValueError):
+        nb_dice = 2
+    nb_dice = 1 if nb_dice not in (1, 2) else nb_dice
+    roll_classic_dice(nb_dice)
+    return redirect(url_for("classic_dice_page"))
+
+
+@app.route("/classic_dice/clear", methods=["POST"])
+def do_classic_dice_clear():
+    clear_classic_dice_history()
+    return redirect(url_for("classic_dice_page"))
+
+
 @app.route("/skip_key_page")
 def skip_key_page():
     global KEY_PAGE_SEEN
@@ -2093,6 +2304,9 @@ def render_story_selector_page():
     <body>
       <div class="page-header">
         <h1>&#127775; Choisis ton histoire</h1>
+        <a href="{url_for('classic_dice_page')}" style="pointer-events:auto; position:absolute; top:14px; left:16px; width:34px; height:34px; display:flex; align-items:center; justify-content:center;">
+          <img src="data:image/png;base64,{CLASSIC_DICE_ICON_B64}" alt="Des classiques" style="width:100%; height:100%; object-fit:contain; filter:drop-shadow(0 2px 6px rgba(0,0,0,0.7));">
+        </a>
         <a href="{url_for('configure_key_page')}" style="pointer-events:auto; position:absolute; top:18px; right:16px; color:#fff; opacity:0.85; text-decoration:none; font-size:1.3rem; text-shadow:0 2px 6px rgba(0,0,0,0.7);">&#128273;</a>
       </div>
       <div class="carousel" id="carousel">
