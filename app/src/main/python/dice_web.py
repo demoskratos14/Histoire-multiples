@@ -640,6 +640,30 @@ PIP_SIZE_BY_COUNT = {
 }
 
 
+def _default_die_placeholder_html():
+    """Contenu (sans le div.die-box englobant) affiche sur le de de
+    reussite avant le tout premier lancer d'une partie (value=None), et
+    la valeur --pip-size a appliquer sur le die-box englobant (None si
+    non pertinent, cas de l'embleme generique).
+
+    Pour Animorph -- seule histoire ayant une sauvegarde de depart
+    ecrite a la main ("seed_state_file", voir switch_story() dans
+    dice_web.py) -- on garde l'embleme generique de l'application, comme
+    avant. Pour toute autre histoire (Poudlard, et n'importe quelle
+    histoire personnalisee creee depuis l'appli, meme future), on
+    affiche a la place l'image/emoji de son totem de depart
+    (default_pip_symbol), pour que l'ecran de jeu soit immediatement
+    coherent avec l'histoire choisie plutot que de montrer un embleme
+    generique sans rapport."""
+    has_seed = bool((CURRENT_STORY_CONFIG or {}).get("seed_state_file"))
+    default_symbol = (CURRENT_STORY_CONFIG or {}).get("default_pip_symbol")
+    if not has_seed and default_symbol:
+        size = PIP_SIZE_BY_COUNT.get(1, "5.0rem")
+        cell = f'<div class="pip pip-single">{render_pip_symbol(default_symbol)}</div>'
+        return cell, size
+    return f'<div class="emblem-placeholder">{EMBLEM_SVG}</div>', None
+
+
 def render_success_die(value, pip_choice, used=True):
     """pip_choice : liste des symboles a utiliser, un par pip (meme taille
     que le nombre de pips de la valeur). Permet le mode fixe (meme symbole
@@ -647,8 +671,10 @@ def render_success_die(value, pip_choice, used=True):
     mixe (un symbole different par pip)."""
     used_cls = "" if used else " die-dimmed"
     if value is None:
-        return (f'<div class="die-box{used_cls}" id="success-die-box">'
-                f'<div class="emblem-placeholder">{EMBLEM_SVG}</div></div>')
+        placeholder, size = _default_die_placeholder_html()
+        style_attr = f' style="--pip-size:{size};"' if size else ""
+        return (f'<div class="die-box{used_cls}" id="success-die-box"{style_attr}>'
+                f'{placeholder}</div>')
     pips = PIP_POSITIONS[value]
     size = PIP_SIZE_BY_COUNT.get(value, "1.6rem")
     if value == 1:
@@ -716,7 +742,15 @@ def _totem_modal_info():
     }
     for t in session.custom_totems:
         info[t["key"]] = {
-            "icon": t.get("emoji") or "\U0001F43E",
+            # Avant : "icon": t.get("emoji") or "\U0001F43E" -- ignorait
+            # completement l'image fournie pour le totem si aucun emoji
+            # n'etait rempli, et retombait TOUJOURS sur la patte
+            # d'Animorph par defaut. render_pip_symbol() gere deja
+            # correctement la priorite image > emoji > symbole generique
+            # (voir plus haut) -- on la reutilise ici pour que l'icone du
+            # totem soit la meme partout dans l'appli (rangee sous le
+            # titre, jauges, vignette au clic...).
+            "icon": render_pip_symbol(t["key"]),
             "label": t["label"],
             "powers": t.get("powers") or [],
             "special": t.get("special") or "",
@@ -767,7 +801,7 @@ const TOTEM_INFO = {totem_info_json};
 function openTotemModal(key){{
   var t = TOTEM_INFO[key];
   if (!t) return;
-  document.getElementById('totem-modal-icon').innerText = t.icon;
+  document.getElementById('totem-modal-icon').innerHTML = t.icon;
   document.getElementById('totem-modal-title').innerText = t.label;
   var ul = document.getElementById('totem-modal-powers');
   ul.innerHTML = "";
