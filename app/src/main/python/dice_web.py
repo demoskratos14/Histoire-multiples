@@ -575,32 +575,80 @@ def render_fate_die(key, used=True):
 # Conteneurs MUTABLES (jamais reassignes en un nouvel objet) pour que tout
 # le code qui les reference reste a jour apres un changement d'histoire.
 TOTEMS = []
-TOTEM_ROW_HTML = ""
 TOTEMS_BY_KEY = {}
 ALLY_HELP_TEXT = {}
-TOTEMS_JSON = "{}"
 
 
 def _rebuild_totem_derived_globals():
     """A appeler apres toute modification de TOTEMS (ou de
-    CURRENT_STORY_CONFIG) : recalcule tout ce qui en derive. Utilise des
-    assignations sur les NOMS globaux de ce module (pas de mutation en
-    place ici, contrairement a PIP_SYMBOLS) car ces valeurs ne sont
-    reference qu'a l'interieur de dice_web.py, jamais importees ailleurs."""
-    global TOTEM_ROW_HTML, TOTEMS_BY_KEY, ALLY_HELP_TEXT, TOTEMS_JSON
-    TOTEM_ROW_HTML = '<div class="totem-row">' + "".join(
-        f'<div class="totem-badge" onclick="openTotemModal(\'{t["key"]}\')">{t["icon"]}</div>'
-        for t in TOTEMS
-    ) + "</div>"
+    CURRENT_STORY_CONFIG), typiquement au changement d'histoire :
+    recalcule tout ce qui en derive et qui ne depend QUE des totems de
+    base de l'histoire (pas des totems ajoutes en cours de partie, qui
+    peuvent changer a tout moment -- voir _totem_modal_info() et
+    render_totem_row_html() ci-dessous, recalcules eux a chaque
+    affichage)."""
+    global TOTEMS_BY_KEY, ALLY_HELP_TEXT
     TOTEMS_BY_KEY = {t["key"]: t for t in TOTEMS}
     ALLY_HELP_TEXT = dict(CURRENT_STORY_CONFIG.get("ally_help_text") or {})
-    TOTEMS_JSON = json.dumps({t["key"]: t for t in TOTEMS})
+
+
+def _totem_modal_info():
+    """Fusionne les totems de base de l'histoire active (avec leurs
+    pouvoirs/capacite definis dans stories.py) et les totems ajoutes par
+    le joueur en cours de partie (session.custom_totems -- y compris le
+    totem de depart d'une histoire personnalisee, ajoute via ce meme
+    systeme, voir switch_story()) en un seul dict
+    {cle: {icon, label, powers, special}}.
+
+    C'est la source commune de la vignette qui s'affiche au clic sur un
+    totem, que ce soit dans la rangee sous le titre ou dans les jauges
+    totemiques. Recalculee a CHAQUE appel (jamais mise en cache dans une
+    variable globale) pour toujours refleter immediatement un totem tout
+    juste ajoute ou retire, sans attendre un changement d'histoire."""
+    info = {
+        t["key"]: {"icon": t["icon"], "label": t["label"],
+                   "powers": t.get("powers") or [], "special": t.get("special") or ""}
+        for t in TOTEMS
+    }
+    for t in session.custom_totems:
+        info[t["key"]] = {
+            "icon": t.get("emoji") or "\U0001F43E",
+            "label": t["label"],
+            "powers": t.get("powers") or [],
+            "special": t.get("special") or "",
+        }
+    return info
+
+
+def render_totem_row_html():
+    """Rangee de badges affichee sous le titre : totems de base deja
+    acquis des le debut de l'histoire (Animorph, Poudlard...) + tous les
+    totems ajoutes par le joueur en cours de partie -- y compris, pour
+    une histoire personnalisee, son unique totem de depart (qui n'existe
+    que via le systeme des totems ajoutes, voir switch_story()). Vide
+    tant qu'aucun totem n'est encore acquis."""
+    info = _totem_modal_info()
+    badges = "".join(
+        f'<div class="totem-badge" onclick="openTotemModal(\'{key}\')">{t["icon"]}</div>'
+        for key, t in info.items()
+    )
+    # Toujours enveloppee dans #totemRow (meme vide) pour pouvoir etre
+    # rafraichie via AJAX quand un totem est ajoute/retire en cours de
+    # partie, sans recharger toute la page -- voir applyGaugeAndPicker().
+    return f'<div class="totem-row" id="totemRow">{badges}</div>'
 
 
 PIP_POSITIONS_JSON = json.dumps({str(k): v for k, v in PIP_POSITIONS.items()})
 FATE_FACES_JSON = json.dumps(FATE_FACES)
 
-MODAL_HTML = f"""
+
+def render_totem_modal_html():
+    """Vignette (modale) affichee au clic sur un totem : icone, nom,
+    liste des pouvoirs et capacite speciale. Regeneree a chaque affichage
+    de page (voir _totem_modal_info()) pour toujours correspondre a
+    l'histoire active et aux totems ajoutes en cours de partie."""
+    totem_info_json = json.dumps(_totem_modal_info())
+    return f"""
 <div id="totem-modal-overlay" class="totem-modal-overlay" onclick="closeTotemModal(event)">
   <div class="totem-modal-box" onclick="event.stopPropagation()">
     <div id="totem-modal-icon" class="totem-modal-icon"></div>
@@ -611,7 +659,7 @@ MODAL_HTML = f"""
   </div>
 </div>
 <script>
-const TOTEM_INFO = {TOTEMS_JSON};
+const TOTEM_INFO = {totem_info_json};
 function openTotemModal(key){{
   var t = TOTEM_INFO[key];
   if (!t) return;
@@ -845,6 +893,12 @@ def roll_animation_script():
       if (gEl && data.gauges) {{ gEl.outerHTML = data.gauges; }}
       var sEl = document.getElementById('symbolPicker');
       if (sEl && data.symbol_picker) {{ sEl.outerHTML = data.symbol_picker; }}
+      var rEl = document.getElementById('totemRow');
+      if (rEl && data.totem_row) {{ rEl.outerHTML = data.totem_row; }}
+      if (data.totem_info) {{
+        Object.keys(TOTEM_INFO).forEach(function(k){{ delete TOTEM_INFO[k]; }});
+        Object.assign(TOTEM_INFO, data.totem_info);
+      }}
     }}
     function addCustomTotem(){{
       var nameEl = document.getElementById('totemNameInput');
@@ -975,8 +1029,41 @@ def roll_animation_script():
     """
 
 
+def back_button_trap_script(target_url):
+    """Piege le bouton 'retour' materiel du telephone (WebView) pour qu'il
+    ramene toujours vers `target_url` (le selecteur d'histoire) au lieu de
+    suivre l'historique de navigation brut du WebView.
+
+    Pourquoi ce piege est necessaire : sur Android, le bouton retour du
+    telephone appelle webView.goBack(), qui rejoue l'historique de PAGES
+    chargees (redirections HTTP comprises), pas l'historique "logique" de
+    l'appli. Or plusieurs ecrans (page de cle API, selecteur d'histoire,
+    ecran de jeu) partagent souvent la meme URL "/" ou s'enchainent via des
+    redirections HTTP -- resultat, un simple retour peut renvoyer vers la
+    page de cle API au lieu du selecteur d'histoire.
+
+    Astuce : on empile un etat factice (history.pushState) des le chargement
+    de cette page. Le bouton retour du telephone "depile" alors cet etat
+    SANS quitter la page (evenement 'popstate', pas de rechargement reseau),
+    ce qui nous laisse decider nous-memes ou l'utilisateur doit atterrir :
+    ici, toujours le selecteur d'histoire, quel que soit l'historique reel."""
+    return f"""
+    <script>
+      (function() {{
+        try {{
+          history.pushState({{backTrap: true}}, '', location.href);
+        }} catch (e) {{}}
+        window.addEventListener('popstate', function(e) {{
+          window.location.href = {json.dumps(target_url)};
+        }});
+      }})();
+    </script>
+    """
+
+
 def layout(title, body):
     header_title = (CURRENT_STORY_CONFIG or {}).get("header_title", "Les Des de l'Aventure")
+    change_story_url = url_for('change_story')
     return render_template_string(f"""
     <!DOCTYPE html><html lang="fr"><head>
     <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
@@ -984,15 +1071,16 @@ def layout(title, body):
     <body>
     <div class="header-block">
       <h1>{header_title}</h1>
-      {TOTEM_ROW_HTML}
+      {render_totem_row_html()}
       <div class="sub">{title}</div>
       <div class="sub" style="margin-top:6px;">
-        <a href="{url_for('change_story')}" style="color:inherit;">&#128257; Changer d'histoire</a>
+        <a href="{change_story_url}" style="color:inherit;">&#128257; Changer d'histoire</a>
       </div>
     </div>
     {{{{ body|safe }}}}
-    {MODAL_HTML}
+    {render_totem_modal_html()}
     {roll_animation_script()}
+    {back_button_trap_script(change_story_url)}
     </body></html>
     """, body=body)
 
@@ -1127,6 +1215,7 @@ def render_totem_gauges_html():
     pleine (>=TOTEM_ENERGY_THRESHOLD) ; un bouton de suppression apparait
     uniquement sur les totems ajoutes par le joueur (jamais sur les
     symboles de base)."""
+    modal_info = _totem_modal_info()
     rows = []
     for key, info in session.all_symbols().items():
         energy = session.totem_energy.get(key, 0)
@@ -1145,9 +1234,19 @@ def render_totem_gauges_html():
             f'<button type="button" class="small danger" onclick="removeCustomTotem(\'{key}\')" '
             f'title="Retirer ce totem">&#128465;</button>'
         ) if info.get("is_custom") else ""
+        # Icone cliquable UNIQUEMENT quand une fiche (pouvoirs/capacite)
+        # existe reellement pour ce symbole -- voir _totem_modal_info() :
+        # totems de base de l'histoire + totems ajoutes par le joueur.
+        # Les symboles sans fiche (allies fixes lies a une face du de,
+        # comme Araignee/Bouclier/Etoile sur Animorph) restent affiches
+        # normalement mais ne declenchent pas la vignette.
+        icon_click = (
+            f' onclick="openTotemModal(\'{key}\')" style="cursor:pointer;"'
+            if key in modal_info else ""
+        )
         rows.append(
             '<div class="totem-gauge-row">'
-            f'<span class="totem-gauge-icon" title="{info["label"]}">{icon_html}</span>'
+            f'<span class="totem-gauge-icon" title="{info["label"]}"{icon_click}>{icon_html}</span>'
             f'<div class="totem-gauge-track"><div class="{bar_cls}" style="width:{pct}%"></div></div>'
             f'<span class="totem-gauge-val">{energy}/{TOTEM_ENERGY_THRESHOLD}</span>'
             f'{btn}{remove_btn}'
@@ -2316,6 +2415,8 @@ def do_add_custom_totem():
     return jsonify({
         "gauges": render_totem_gauges_html(),
         "symbol_picker": render_symbol_picker_html(),
+        "totem_row": render_totem_row_html(),
+        "totem_info": _totem_modal_info(),
     })
 
 
@@ -2333,6 +2434,8 @@ def do_remove_custom_totem():
     return jsonify({
         "gauges": render_totem_gauges_html(),
         "symbol_picker": render_symbol_picker_html(),
+        "totem_row": render_totem_row_html(),
+        "totem_info": _totem_modal_info(),
     })
 
 
