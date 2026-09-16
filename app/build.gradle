@@ -54,3 +54,10 @@ chaquopy {
 dependencies {
     implementation 'androidx.appcompat:appcompat:1.7.0'
 }
+
+// Renomme le fichier .apk genere (au lieu de "app-debug.apk").
+android.applicationVariants.all { variant ->
+    variant.outputs.all {
+        outputFileName = "Dés d'Aventure-${variant.buildType.name}.apk"
+    }
+}
