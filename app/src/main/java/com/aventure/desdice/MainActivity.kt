@@ -45,6 +45,13 @@ class MainActivity : AppCompatActivity() {
     // la faire passer par handle_request() au lieu du reseau.
     private val virtualHost = "127.0.0.1"
     private val virtualUrl = "http://$virtualHost/"
+    // addDocumentStartJavaScript() attend une regle d'ORIGINE (schema +
+    // hote + port eventuel), jamais un chemin ni de wildcard apres un
+    // "/". "http://127.0.0.1/" est donc invalide (IllegalArgumentException
+    // au lancement) -- il faut l'origine seule, sans slash final. Une
+    // regle d'origine s'applique deja a toutes les URL de cette origine,
+    // quel que soit le chemin, donc une seule entree suffit.
+    private val virtualOrigin = "http://$virtualHost"
 
     // --- Selecteur de fichiers pour les <input type="file"> de la page web ---
     private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
@@ -105,7 +112,7 @@ class MainActivity : AppCompatActivity() {
 
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             WebViewCompat.addDocumentStartJavaScript(
-                webView, BRIDGE_SCRIPT, setOf(virtualUrl, "$virtualUrl*")
+                webView, BRIDGE_SCRIPT, setOf(virtualOrigin)
             )
         }
         // Necessite la dependance androidx.webkit:webkit (voir build.gradle).
@@ -129,10 +136,7 @@ class MainActivity : AppCompatActivity() {
                     return super.shouldInterceptRequest(view, request)
                 }
                 return try {
-                    val path = req.url.path ?: "/"
-                    val query = req.url.query
-                    val fullPath = if (query.isNullOrEmpty()) path else "$path?$query"
-                    serveRequest(req.method, fullPath, req.requestHeaders)
+                    serveRequest(req.method, req.url.path ?: "/", req.requestHeaders)
                 } catch (e: Exception) {
                     null
                 }
