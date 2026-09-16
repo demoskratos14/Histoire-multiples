@@ -68,13 +68,24 @@ def chat(api_key, messages, model=DEFAULT_MODEL,
         try:
             detail = json.loads(e.read().decode("utf-8"))
             detail_msg = detail.get("message") or detail.get("error") or str(detail)
+            # Certaines erreurs Mistral imbriquent le message utile dans un
+            # sous-objet ({"error": {"message": "...", "type": "..."}})
+            # plutot que directement a la racine -- on essaie de le
+            # depiler pour ne pas afficher juste "{'message': ..., ...}".
+            if isinstance(detail_msg, dict):
+                detail_msg = detail_msg.get("message") or str(detail_msg)
         except Exception:
             detail_msg = getattr(e, "reason", str(e))
         if e.code == 401:
             return None, "Cle API Mistral refusee (401) : verifie qu'elle est correcte."
         if e.code == 429:
-            return None, ("Limite du plan gratuit atteinte pour l'instant (429). "
-                           "Reessaie dans un instant.")
+            # On affiche desormais le detail renvoye par Mistral (type de
+            # limite depassee, message precis...) en plus du code, au lieu
+            # d'un texte fixe qui masquait la vraie cause quand ce n'etait
+            # pas un simple pic de trafic (ex : plan non active, quota
+            # mensuel epuise...).
+            return None, (f"Limite Mistral atteinte (429) : {detail_msg} "
+                           "Reessaie dans un instant ou verifie ton plan sur console.mistral.ai.")
         return None, f"Erreur Mistral ({e.code}) : {detail_msg}"
     except urllib.error.URLError as e:
         return None, f"Impossible de joindre l'API Mistral (reseau ?) : {e.reason}"
