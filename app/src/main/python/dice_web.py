@@ -693,8 +693,11 @@ def render_success_die(value, pip_choice, used=True):
 def render_fate_die(key, used=True):
     used_cls = "" if used else " die-dimmed"
     if key is None:
+        # Meme emoji "boule de cristal" que sur le bouton "Lancer" du de
+        # du destin (&#128302; = 🔮), plutot que l'embleme generique
+        # (patte animale) qui n'a rien a voir avec ce de.
         return (f'<div class="die-box fate{used_cls}" id="fate-die-box">'
-                f'<div class="emblem-placeholder">{EMBLEM_SVG}</div></div>')
+                f'<div class="fate-emoji">&#128302;</div></div>')
     face = FATE_BY_KEY[key]
     return (f'<div class="die-box fate{used_cls}" id="fate-die-box"><div class="fate-emoji">{face["emoji"]}</div>'
             f'<div class="fate-label">{face["label"]}</div></div>')
