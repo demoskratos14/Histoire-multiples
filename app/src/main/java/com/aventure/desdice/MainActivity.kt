@@ -3,6 +3,8 @@ package com.aventure.desdice
 import android.annotation.SuppressLint
 import android.net.Uri
 import android.os.Bundle
+import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Base64
 import android.webkit.JavascriptInterface
 import android.webkit.ValueCallback
@@ -19,6 +21,7 @@ import com.chaquo.python.Python
 import com.chaquo.python.android.AndroidPlatform
 import org.json.JSONObject
 import java.io.ByteArrayInputStream
+import java.util.Locale
 
 /**
  * Toute l'application vit ici : au lancement, on prepare l'app Flask
@@ -52,6 +55,15 @@ class MainActivity : AppCompatActivity() {
     // regle d'origine s'applique deja a toutes les URL de cette origine,
     // quel que soit le chemin, donc une seule entree suffit.
     private val virtualOrigin = "http://$virtualHost"
+
+    // --- Synthese vocale native (voir AndroidBridge.speak plus bas) ---
+    // window.speechSynthesis, utilise auparavant cote JS, n'expose quasiment
+    // jamais de voix fonctionnelles dans la WebView systeme Android (getVoices()
+    // y renvoie un tableau vide sans la moindre erreur) : on passe donc par le
+    // moteur TextToSpeech natif d'Android, beaucoup plus fiable, via le meme
+    // pont AndroidBridge que celui deja utilise pour les requetes reseau.
+    private lateinit var tts: TextToSpeech
+    private var ttsReady = false
 
     // --- Selecteur de fichiers pour les <input type="file"> de la page web ---
     private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
@@ -87,6 +99,23 @@ class MainActivity : AppCompatActivity() {
                 .callAttr("handle_request", method, path, headersJson, bodyBase64)
                 .toString()
         }
+
+        // Lit "text" a voix haute via le TTS natif. Retourne true si la
+        // lecture a bien pu demarrer (permet a speakAiFeed() cote JS de
+        // detecter cette methode et de l'utiliser au lieu de
+        // window.speechSynthesis -- voir dice_web.py).
+        @JavascriptInterface
+        fun speak(text: String): Boolean {
+            if (!ttsReady || text.isBlank()) return false
+            val params = Bundle()
+            val result = tts.speak(text, TextToSpeech.QUEUE_FLUSH, params, "diceSpeakUtterance")
+            return result == TextToSpeech.SUCCESS
+        }
+
+        @JavascriptInterface
+        fun stopSpeaking() {
+            if (ttsReady) tts.stop()
+        }
     }
 
     @SuppressLint("SetJavaScriptEnabled")
@@ -109,6 +138,32 @@ class MainActivity : AppCompatActivity() {
         webView.settings.domStorageEnabled = true
         webView.settings.allowFileAccess = true
         webView.addJavascriptInterface(AndroidBridge(), "AndroidBridge")
+
+        tts = TextToSpeech(this) { status ->
+            if (status == TextToSpeech.SUCCESS) {
+                tts.language = Locale.FRANCE
+                ttsReady = true
+            }
+        }
+        tts.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+            override fun onStart(utteranceId: String?) {}
+            override fun onDone(utteranceId: String?) {
+                // Remet le bouton "Ecouter" dans son etat initial cote JS
+                // (voir onDone/onError dans speakAiFeed(), dice_web.py).
+                webView.post {
+                    webView.evaluateJavascript(
+                        "window.__diceOnSpeakDone && window.__diceOnSpeakDone();", null
+                    )
+                }
+            }
+            override fun onError(utteranceId: String?) {
+                webView.post {
+                    webView.evaluateJavascript(
+                        "window.__diceOnSpeakDone && window.__diceOnSpeakDone();", null
+                    )
+                }
+            }
+        })
 
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             WebViewCompat.addDocumentStartJavaScript(
@@ -207,6 +262,14 @@ class MainActivity : AppCompatActivity() {
         } else {
             super.onBackPressed()
         }
+    }
+
+    override fun onDestroy() {
+        if (::tts.isInitialized) {
+            tts.stop()
+            tts.shutdown()
+        }
+        super.onDestroy()
     }
 
     companion object {
