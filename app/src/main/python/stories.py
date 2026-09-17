@@ -460,3 +460,119 @@ def all_story_order():
     """Comme STORY_ORDER, mais en y ajoutant les histoires personnalisees
     a la suite, dans leur ordre de creation."""
     return STORY_ORDER + [m["slug"] for m in _load_custom_meta()]
+
+
+# ---------------------------------------------------------------------
+# Export / import de "l'identite" d'une histoire personnalisee (titre,
+# sous-titre, description d'univers, totem de depart) -- pour permettre
+# de la reconstituer apres une desinstallation/reinstallation de
+# l'application (ou un changement de telephone), sans tout retaper.
+# Contrairement a CUSTOM_STORIES_FILE (qui reste le stockage interne,
+# jamais expose tel quel), ce format est concu pour etre telecharge,
+# renomme, garde de cote, puis reimporte plus tard depuis la page
+# "Nouvelle histoire" (voir do_import_identity dans dice_web.py).
+# ---------------------------------------------------------------------
+
+IDENTITY_EXPORT_TYPE = "dice_story_identity"
+IDENTITY_EXPORT_VERSION = 1
+
+
+def export_story_identity(slug):
+    """Construit le dict exportable (titre, sous-titre, description
+    d'univers, totem de depart -- texte ET images en base64 si elles
+    existent encore sur le disque) d'une histoire personnalisee. Renvoie
+    None si slug ne correspond a aucune histoire personnalisee (les
+    histoires integrees, Animorph/Poudlard, n'ont pas ce format : elles
+    sont codees en dur et toujours presentes, rien a reinjecter pour
+    elles)."""
+    meta = next((m for m in _load_custom_meta() if m["slug"] == slug), None)
+    if meta is None:
+        return None
+
+    bg_b64, bg_ext = None, None
+    bg_file = meta.get("bg_image_file")
+    if bg_file:
+        bg_path = os.path.join(CUSTOM_STORY_BG_DIR, bg_file)
+        if os.path.exists(bg_path):
+            with open(bg_path, "rb") as f:
+                bg_b64 = base64.b64encode(f.read()).decode("ascii")
+            bg_ext = bg_file.rsplit(".", 1)[-1].lower() if "." in bg_file else "jpg"
+
+    totem_b64, totem_ext = None, None
+    totem_filename = meta.get("totem_image_filename")
+    if totem_filename:
+        totem_path = os.path.join("totem_images", totem_filename)
+        if os.path.exists(totem_path):
+            with open(totem_path, "rb") as f:
+                totem_b64 = base64.b64encode(f.read()).decode("ascii")
+            totem_ext = totem_filename.rsplit(".", 1)[-1].lower() if "." in totem_filename else "png"
+
+    return {
+        "type": IDENTITY_EXPORT_TYPE,
+        "version": IDENTITY_EXPORT_VERSION,
+        "title": meta.get("title") or "",
+        "subtitle": meta.get("subtitle") or "",
+        "lore_text": meta.get("lore_text") or "",
+        "totem_label": meta.get("totem_label") or "",
+        "totem_powers": meta.get("totem_powers") or "",
+        "totem_special": meta.get("totem_special") or "",
+        # Images incluses directement dans le fichier quand elles sont
+        # disponibles : permet une reinjection complete (plus besoin de
+        # les remettre a la main). Restent absentes (None) si l'image
+        # n'existe plus sur le disque -- l'import gere alors ce cas
+        # normalement, en redemandant seulement l'image manquante.
+        "bg_image_b64": bg_b64,
+        "bg_image_ext": bg_ext,
+        "totem_image_b64": totem_b64,
+        "totem_image_ext": totem_ext,
+    }
+
+
+def parse_identity_import(raw_json_text):
+    """Parse un fichier exporte par export_story_identity() (ou modifie a
+    la main, tant que les champs texte restent presents). Ne leve jamais
+    d'exception : un fichier illisible ou invalide renvoie un dict vide
+    (aucun champ pre-rempli) plutot que de faire planter la page.
+
+    Renvoie un dict avec les 6 champs texte (chaines vides si absents) et,
+    si des images etaient incluses, leurs bytes deja decodes
+    (bg_image_bytes/totem_image_bytes, None sinon)."""
+    try:
+        data = json.loads(raw_json_text)
+    except (ValueError, TypeError):
+        return {}
+    if not isinstance(data, dict):
+        return {}
+
+    result = {
+        "title": str(data.get("title") or ""),
+        "subtitle": str(data.get("subtitle") or ""),
+        "lore_text": str(data.get("lore_text") or ""),
+        "totem_label": str(data.get("totem_label") or ""),
+        "totem_powers": str(data.get("totem_powers") or ""),
+        "totem_special": str(data.get("totem_special") or ""),
+        "bg_image_bytes": None,
+        "bg_image_ext": None,
+        "totem_image_bytes": None,
+        "totem_image_ext": None,
+    }
+
+    bg_b64 = data.get("bg_image_b64")
+    if isinstance(bg_b64, str) and bg_b64:
+        try:
+            result["bg_image_bytes"] = base64.b64decode(bg_b64)
+            ext = data.get("bg_image_ext")
+            result["bg_image_ext"] = ext if isinstance(ext, str) and ext else "jpg"
+        except (ValueError, TypeError, base64.binascii.Error):
+            pass
+
+    totem_b64 = data.get("totem_image_b64")
+    if isinstance(totem_b64, str) and totem_b64:
+        try:
+            result["totem_image_bytes"] = base64.b64decode(totem_b64)
+            ext = data.get("totem_image_ext")
+            result["totem_image_ext"] = ext if isinstance(ext, str) and ext else "png"
+        except (ValueError, TypeError, base64.binascii.Error):
+            pass
+
+    return result

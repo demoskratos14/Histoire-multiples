@@ -17,14 +17,17 @@ import json
 import math
 import os
 import random
+import re
 import shutil
 import uuid
-from flask import Flask, request, redirect, url_for, render_template_string, jsonify, send_from_directory
+from flask import (Flask, request, redirect, url_for, render_template_string,
+                    jsonify, send_from_directory, Response)
 
 import dice_engine
 from dice_engine import (DiceSession, FATE_FACES, FATE_BY_KEY, SUCCESS_LABELS,
                           PIP_SYMBOLS, TOTEM_ENERGY_THRESHOLD, THREAT_THRESHOLD)
 import image_utils
+import journal_export
 import mistral_client
 import stories
 from bg_key_page_data import BG_IMAGE_B64 as KEY_PAGE_BG_B64
@@ -54,7 +57,7 @@ def _ensure_story_selected():
     une securite peu couteuse."""
     if session is None and request.endpoint not in (
         "index", "select_story", "change_story",
-        "create_story_form", "do_create_story",
+        "create_story_form", "do_create_story", "do_import_identity",
         "debug_images",
         "configure_key_page", "do_configure_key", "skip_key_page", "do_set_model",
         "do_delete_story", "classic_dice_page", "do_classic_dice_roll",
@@ -68,6 +71,17 @@ def _ensure_story_selected():
 # demande, seulement quand une premiere image est effectivement envoyee.
 TOTEM_IMAGES_DIR = "totem_images"
 ALLOWED_TOTEM_IMAGE_EXTS = {"png", "jpg", "jpeg", "gif", "webp"}
+
+# Dossier temporaire pour les images (fond + totem) deja decodees depuis
+# un fichier d'histoire importe (voir stories.parse_identity_import() et
+# do_import_identity() plus bas), en attendant que le formulaire "Creer
+# une histoire" soit effectivement soumis -- un fichier d'entree <input
+# type="file"> ne peut pas etre pre-rempli par securite navigateur, donc
+# on garde ces bytes de cote sur disque (identifies par un jeton unique
+# transmis via un champ cache) plutot que de forcer un nouvel upload
+# alors que l'image etait deja dans le fichier importe. Nettoye des que
+# le formulaire de creation est soumis (voir _cleanup_import_tmp).
+IDENTITY_IMPORT_TMP_DIR = "identity_import_tmp"
 
 # Fichier de config au niveau de l'APPLICATION (pas d'une histoire en
 # particulier) : pour l'instant, seulement la cle API Mistral, partagee
@@ -487,6 +501,26 @@ BASE_CSS = """
   .totem-gauge-val{
     font-size:0.75rem; color:#fff; opacity:0.85; min-width:38px; text-align:right;
     text-shadow:1px 1px 2px rgba(0,0,0,0.7);
+  }
+  .export-badge-row{
+    display:flex; gap:18px; justify-content:center; flex-wrap:wrap;
+    margin:4px 0;
+  }
+  .export-badge{
+    display:flex; flex-direction:column; align-items:center; gap:5px;
+    text-decoration:none; cursor:pointer;
+  }
+  .export-badge-icon{
+    width:56px; height:56px; border-radius:50%; background:#fffdf7;
+    border:2.5px solid var(--ink); display:flex; align-items:center; justify-content:center;
+    font-size:1.7rem; box-shadow:3px 3px 0 var(--ink); transition:transform 0.08s, box-shadow 0.08s;
+  }
+  .export-badge:active .export-badge-icon{
+    transform:translate(2px,2px); box-shadow:1px 1px 0 var(--ink);
+  }
+  .export-badge-label{
+    font-size:0.75rem; font-weight:800; color:#fff; text-align:center; max-width:96px;
+    text-shadow:1px 1px 3px rgba(0,0,0,0.75);
   }
 </style>
 <script>
@@ -1147,6 +1181,14 @@ def roll_animation_script():
         .then(function(r){{ return r.json(); }})
         .then(function(data){{
           if (el) {{ el.value = ''; }}
+          // Sur la page /story (le journal lui-meme), le nouveau
+          // chapitre doit apparaitre dans la boite en lecture seule --
+          // le plus simple/fiable est de recharger la page plutot que
+          // de rejouer story_log_text() cote client.
+          if (document.getElementById('storybox')) {{
+            window.location.reload();
+            return;
+          }}
           var b = document.querySelector('button[onclick="addStoryEntry()"]');
           if (b) {{
             var old = b.innerText;
@@ -1957,6 +1999,45 @@ def build_ai_kickoff_message():
                       "la situation de depart de Gabin/Animorph, puis demande-moi le "
                       "premier lancer des que la situation l'exige.")
     return "\n".join(lines)
+
+
+def render_journal_export_badges_html():
+    """Remplace l'ancien bloc 'Dernier lancer' (resume a coller, lien
+    vers le journal complet, annuler/effacer -- retires de l'interface a
+    la demande) par deux badges cliquables :
+    - le livre ouvert telecharge le journal complet de l'histoire, en PDF
+      (voir /export_journal, avec secours .txt automatique si fpdf2
+      n'est pas installe) ;
+    - le badge memo telecharge le fichier d'identite de l'histoire
+      (titre, sous-titre, totem, description -- et ses images si elles
+      sont encore sur le disque), reinjectable plus tard depuis la page
+      'Nouvelle histoire' (utile apres une desinstallation/reinstallation
+      de l'application). Uniquement propose pour une histoire
+      personnalisee : Animorph/Poudlard sont codees en dur et toujours
+      presentes, rien a reinjecter pour elles (voir /export_identity).
+
+    Le paste manuel d'un resume de chapitre (mode sans cle Mistral) vit
+    desormais sur la page /story elle-meme (voir show_story()), pour
+    garder cette carte courte."""
+    totem_badge = ""
+    if CURRENT_STORY_CONFIG.get("is_custom"):
+        totem_badge = f"""
+        <a class="export-badge" href="{url_for('export_identity')}"
+           title="Sauvegarder cette histoire (titre, totem, description...) pour pouvoir la reinjecter plus tard">
+          <span class="export-badge-icon">&#128221;</span>
+          <span class="export-badge-label">Sauvegarder l'histoire</span>
+        </a>"""
+    return f"""
+    <div class="card">
+      <div class="export-badge-row">
+        <a class="export-badge" href="{url_for('show_story')}"
+           title="Voir le journal, et le telecharger en PDF">
+          <span class="export-badge-icon">&#128214;</span>
+          <span class="export-badge-label">Journal (PDF)</span>
+        </a>{totem_badge}
+      </div>
+    </div>
+    """
 
 
 def render_continue_card_html():
@@ -2787,18 +2868,33 @@ def change_story():
     return render_story_selector_page()
 
 
-def render_create_story_page(errors=None, values=None):
+def render_create_story_page(errors=None, values=None, imported=None, notice=None):
     """Page 'Nouvelle histoire' : image de fond, courte description
     d'univers (ajoutee au prompt envoye a l'IA, a la place de celle des
     autres histoires), et image du premier totem (affichee comme
     constellation sur le de de reussite). Page autonome, independante de
     toute histoire active (comme le selecteur), pour rester accessible
-    avant meme qu'une histoire ait ete choisie."""
+    avant meme qu'une histoire ait ete choisie.
+
+    imported (optionnel) : {"bg_token": str|None, "totem_token": str|None}
+    -- jetons d'images deja decodees depuis un fichier d'histoire importe
+    (voir do_import_identity), transmis via des champs caches pour que
+    do_create_story puisse les recuperer sans reupload si l'utilisateur
+    ne fournit pas de nouvelle image. notice (optionnel) : message de
+    confirmation apres un import reussi."""
     values = values or {}
+    imported = imported or {}
+    bg_token = imported.get("bg_token") or ""
+    totem_token = imported.get("totem_token") or ""
+
     error_html = ""
     if errors:
         items = "".join(f"<li>{e}</li>" for e in errors)
         error_html = f'<div class="form-errors"><ul>{items}</ul></div>'
+
+    notice_html = ""
+    if notice:
+        notice_html = f'<div class="form-notice">&#10003; {notice}</div>'
 
     def esc(s):
         return (s or "").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
@@ -2848,13 +2944,39 @@ def render_create_story_page(errors=None, values=None):
         border-radius:8px; padding:10px 14px; margin-bottom:14px; font-weight:700;
       }}
       .form-errors ul{{margin:0; padding-left:18px;}}
+      .form-notice{{
+        background:#eefbea; border:2px solid #2f9e44; color:#1c6b2a;
+        border-radius:8px; padding:10px 14px; margin-bottom:14px; font-weight:700;
+      }}
+      .import-box{{
+        margin-bottom:18px; padding-bottom:16px; border-bottom:2px dashed var(--ink);
+      }}
+      .imported-hint{{
+        color:#1c6b2a; font-weight:700; font-size:0.85rem; margin:2px 0 6px 0;
+      }}
     </style>
     </head>
     <body>
       <h1>&#10024; Cree ta propre histoire</h1>
       <div class="card">
         {error_html}
+        <form method="post" action="{url_for('do_import_identity')}" enctype="multipart/form-data" class="import-box">
+          <label>Deja cree cette histoire avant ?</label>
+          <div class="hint">
+            Importe le fichier <code>.json</code> telecharge via le badge
+            &#127996;&#8205;&#9997;&#65039; dans le jeu (page d'accueil) : ca
+            preremplit titre, sous-titre, totem et description ci-dessous
+            (et les images, si elles etaient incluses dans le fichier).
+          </div>
+          <input type="file" name="identity_file" accept="application/json,.json">
+          <button type="submit" class="btn secondary" style="margin-top:10px;">
+            &#128194; Importer ce fichier
+          </button>
+        </form>
+        {notice_html}
         <form method="post" action="{url_for('do_create_story')}" enctype="multipart/form-data">
+          <input type="hidden" name="imported_bg_token" value="{esc(bg_token)}">
+          <input type="hidden" name="imported_totem_token" value="{esc(totem_token)}">
           <label>Titre de l'histoire</label>
           <input type="text" name="title" value="{esc(values.get('title'))}" placeholder="Ex : La Foret des Chuchoteurs" required>
 
@@ -2863,7 +2985,8 @@ def render_create_story_page(errors=None, values=None):
 
           <label>Image de fond</label>
           <div class="hint">Utilisee comme fond de tout l'ecran de jeu pour cette histoire.</div>
-          <input type="file" name="bg_image" accept="image/*" required>
+          {'<div class="imported-hint">&#10003; Image importee depuis le fichier -- laisse ce champ vide pour la garder, ou choisis-en une nouvelle pour la remplacer.</div>' if bg_token else ''}
+          <input type="file" name="bg_image" accept="image/*" {'' if bg_token else 'required'}>
 
           <label>Description de l'univers</label>
           <div class="hint">Quelques phrases sur le monde, le ton, le personnage... Ajoutees au contexte envoye a l'IA narratrice, a la place de celui des autres histoires.</div>
@@ -2875,7 +2998,8 @@ def render_create_story_page(errors=None, values=None):
 
           <label>Image du premier totem</label>
           <div class="hint">Affichee sur les faces du de de reussite pour cette histoire.</div>
-          <input type="file" name="totem_image" accept="image/*" required>
+          {'<div class="imported-hint">&#10003; Image importee depuis le fichier -- laisse ce champ vide pour la garder, ou choisis-en une nouvelle pour la remplacer.</div>' if totem_token else ''}
+          <input type="file" name="totem_image" accept="image/*" {'' if totem_token else 'required'}>
 
           <label>Pouvoirs du totem <span class="hint">(optionnel)</span></label>
           <div class="hint">Separes par des virgules -- comme pour un totem ajoute en cours de partie.</div>
@@ -2897,6 +3021,58 @@ def create_story_form():
     return render_create_story_page()
 
 
+@app.route("/create_story/import", methods=["POST"])
+def do_import_identity():
+    """Lit un fichier d'identite d'histoire (voir stories.py :
+    export_story_identity / parse_identity_import) et re-affiche la page
+    de creation avec les champs texte preremplis. Les images incluses
+    dans le fichier (si presentes) sont decodees et mises de cote sur
+    disque (voir _save_import_tmp) : do_create_story ci-dessous les
+    reutilisera si l'utilisateur ne fournit pas de nouvelle image."""
+    identity_file = request.files.get("identity_file")
+    if not identity_file or not identity_file.filename:
+        return render_create_story_page(
+            errors=["Choisis d'abord un fichier d'histoire (.json) a importer."])
+
+    try:
+        raw_text = identity_file.read().decode("utf-8")
+    except UnicodeDecodeError:
+        return render_create_story_page(
+            errors=["Ce fichier n'est pas lisible comme fichier d'histoire (encodage invalide)."])
+
+    parsed = stories.parse_identity_import(raw_text)
+    if not parsed or not (parsed.get("title") or parsed.get("totem_label")):
+        return render_create_story_page(
+            errors=["Ce fichier ne semble pas etre un fichier d'histoire valide."])
+
+    values = {
+        "title": parsed.get("title", ""),
+        "subtitle": parsed.get("subtitle", ""),
+        "lore_text": parsed.get("lore_text", ""),
+        "totem_label": parsed.get("totem_label", ""),
+        "totem_powers": parsed.get("totem_powers", ""),
+        "totem_special": parsed.get("totem_special", ""),
+    }
+
+    imported = {"bg_token": None, "totem_token": None}
+    notice_parts = ["Titre, sous-titre, totem et description importes."]
+    if parsed.get("bg_image_bytes"):
+        imported["bg_token"] = _save_import_tmp(
+            parsed["bg_image_bytes"], parsed.get("bg_image_ext"), "bg")
+        notice_parts.append("Image de fond importee.")
+    else:
+        notice_parts.append("Il ne reste plus qu'a choisir une image de fond.")
+    if parsed.get("totem_image_bytes"):
+        imported["totem_token"] = _save_import_tmp(
+            parsed["totem_image_bytes"], parsed.get("totem_image_ext"), "totem")
+        notice_parts.append("Image du totem importee.")
+    else:
+        notice_parts.append("Il ne reste plus qu'a choisir une image pour le totem.")
+
+    return render_create_story_page(values=values, imported=imported,
+                                     notice=" ".join(notice_parts))
+
+
 @app.route("/create_story", methods=["POST"])
 def do_create_story():
     title = (request.form.get("title") or "").strip()
@@ -2907,11 +3083,19 @@ def do_create_story():
     totem_special = (request.form.get("totem_special") or "").strip()
     bg_file = request.files.get("bg_image")
     totem_file = request.files.get("totem_image")
+    # Jetons d'images deja decodees depuis un fichier importe (voir
+    # do_import_identity ci-dessus) : utilises seulement si aucune
+    # nouvelle image n'est uploadee ici (un nouvel upload prend toujours
+    # le pas, pour permettre de remplacer une image importee).
+    imported_bg_token = (request.form.get("imported_bg_token") or "").strip()
+    imported_totem_token = (request.form.get("imported_totem_token") or "").strip()
 
     values = {
         "title": title, "subtitle": subtitle, "lore_text": lore_text,
         "totem_label": totem_label, "totem_powers": totem_powers, "totem_special": totem_special,
     }
+    imported = {"bg_token": imported_bg_token or None, "totem_token": imported_totem_token or None}
+
     errors = []
     if not title:
         errors.append("Le titre de l'histoire est obligatoire.")
@@ -2919,21 +3103,38 @@ def do_create_story():
         errors.append("La description de l'univers est obligatoire.")
     if not totem_label:
         errors.append("Le nom du premier totem est obligatoire.")
-    if not bg_file or not bg_file.filename:
-        errors.append("Une image de fond est obligatoire.")
-    if not totem_file or not totem_file.filename:
-        errors.append("Une image pour le premier totem est obligatoire.")
+    have_bg = (bg_file and bg_file.filename) or imported_bg_token
+    have_totem = (totem_file and totem_file.filename) or imported_totem_token
+    if not have_bg:
+        errors.append("Une image de fond est obligatoire (upload, ou fichier d'histoire importe).")
+    if not have_totem:
+        errors.append("Une image pour le premier totem est obligatoire (upload, ou fichier d'histoire importe).")
 
     if errors:
-        return render_create_story_page(errors=errors, values=values)
+        return render_create_story_page(errors=errors, values=values, imported=imported)
 
-    bg_bytes = bg_file.read()
-    bg_ext = bg_file.filename.rsplit(".", 1)[-1].lower() if "." in bg_file.filename else "jpg"
+    if bg_file and bg_file.filename:
+        bg_bytes = bg_file.read()
+        bg_ext = bg_file.filename.rsplit(".", 1)[-1].lower() if "." in bg_file.filename else "jpg"
+    else:
+        bg_bytes = _load_import_tmp(imported_bg_token)
+        bg_ext = "jpg"
+        if bg_bytes is None:
+            errors.append("L'image de fond importee n'est plus disponible : remets-la manuellement.")
+            return render_create_story_page(errors=errors, values=values)
+
     # L'image du totem passe par le mecanisme deja existant des totems
     # ajoutes en cours de partie (meme dossier, memes extensions
     # autorisees) -- switch_story() s'en servira comme totem de depart au
     # tout premier lancement de cette histoire.
-    totem_image_filename = _save_totem_image(totem_file)
+    if totem_file and totem_file.filename:
+        totem_image_filename = _save_totem_image(totem_file)
+    else:
+        totem_bytes = _load_import_tmp(imported_totem_token)
+        if totem_bytes is None:
+            errors.append("L'image du totem importee n'est plus disponible : remets-la manuellement.")
+            return render_create_story_page(errors=errors, values=values)
+        totem_image_filename = _save_totem_image_bytes(totem_bytes)
 
     slug = stories.create_custom_story(
         title=title, subtitle=subtitle, lore_text=lore_text,
@@ -2941,6 +3142,11 @@ def do_create_story():
         totem_label=totem_label, totem_image_filename=totem_image_filename,
         totem_powers=totem_powers, totem_special=totem_special,
     )
+
+    # Une fois l'histoire creee avec succes, les fichiers temporaires
+    # d'import (s'il y en avait) ne servent plus a rien.
+    _cleanup_import_tmp(imported_bg_token)
+    _cleanup_import_tmp(imported_totem_token)
 
     switch_story(slug)
     return redirect(url_for("index"))
@@ -2997,26 +3203,7 @@ def index():
 
     {render_continue_card_html()}
 
-    <div class="card">
-      <h2 style="margin-top:0">Dernier lancer</h2>
-      {render_history_list_html()}
-      {(
-        '<p class="hint" style="margin-top:14px;">Le journal se remplit '
-        'automatiquement, chapitre par chapitre, au fil de la narration '
-        'automatique (voir plus haut).</p>'
-      ) if has_mistral_key() else (
-        '<label style="margin-top:14px;">Coller ici le resume de chapitre recu de l\'IA narratrice</label>'
-        '<textarea id="storyEntryInput" placeholder="Colle ici le bloc recu a la fin d\'un chapitre"></textarea>'
-        '<button type="button" onclick="addStoryEntry()">&#128218; Ajouter au journal de l\'histoire</button>'
-      )}
-      <a class="btn secondary" href="{url_for('show_story')}">Voir le journal complet</a>
-      <div style="margin-top:16px;">
-        <button type="button" class="secondary" onclick="doUndo()">
-          &#8617; Annuler le dernier lancer
-        </button>
-        <button type="button" class="danger" onclick="doClear()">Effacer tout l'historique</button>
-      </div>
-    </div>
+    {render_journal_export_badges_html()}
     """
     return layout("Pret pour l'aventure !", body)
 
@@ -3133,20 +3320,18 @@ def totem_image(filename):
     return send_from_directory(os.path.abspath(TOTEM_IMAGES_DIR), filename)
 
 
-def _save_totem_image(file_storage):
-    """Sauvegarde une image de totem uploadee, avec un nom de fichier
-    genere (pour eviter toute collision), et renvoie ce nom de fichier
-    (ou None si aucun fichier valide n'a ete fourni). L'image est
-    redimensionnee/recompressee au passage (voir image_utils.py) -- elle
-    n'a besoin que d'etre nette a une taille d'icone (1em/1.15rem)."""
-    if not file_storage or not file_storage.filename:
+def _save_totem_image_bytes(raw_bytes, filename_hint=""):
+    """Coeur de _save_totem_image ci-dessous : sauvegarde des bytes de
+    totem DEJA LUS (que ce soit un upload direct, ou une image decodee
+    depuis un fichier d'histoire importe -- voir do_create_story) sous un
+    nom de fichier genere. Renvoie None si raw_bytes est vide."""
+    if not raw_bytes:
         return None
     ext = ""
-    if "." in file_storage.filename:
-        ext = file_storage.filename.rsplit(".", 1)[-1].lower()
+    if filename_hint and "." in filename_hint:
+        ext = filename_hint.rsplit(".", 1)[-1].lower()
     if ext not in ALLOWED_TOTEM_IMAGE_EXTS:
         ext = "png"
-    raw_bytes = file_storage.read()
     resized_bytes, resized_ext = image_utils.resize_totem_bytes(raw_bytes)
     if resized_ext:
         ext = resized_ext
@@ -3155,6 +3340,62 @@ def _save_totem_image(file_storage):
     with open(os.path.join(TOTEM_IMAGES_DIR, filename), "wb") as f:
         f.write(resized_bytes)
     return filename
+
+
+def _save_totem_image(file_storage):
+    """Sauvegarde une image de totem uploadee, avec un nom de fichier
+    genere (pour eviter toute collision), et renvoie ce nom de fichier
+    (ou None si aucun fichier valide n'a ete fourni). L'image est
+    redimensionnee/recompressee au passage (voir image_utils.py) -- elle
+    n'a besoin que d'etre nette a une taille d'icone (1em/1.15rem)."""
+    if not file_storage or not file_storage.filename:
+        return None
+    return _save_totem_image_bytes(file_storage.read(), file_storage.filename)
+
+
+# ---------- fichiers d'histoire importes (voir IDENTITY_IMPORT_TMP_DIR) ----------
+
+def _save_import_tmp(raw_bytes, ext, kind):
+    """Sauvegarde temporairement des bytes d'image decodes depuis un
+    fichier d'histoire importe, sous un nom genere (jeton), en attendant
+    la soumission du formulaire de creation. Renvoie le nom de fichier
+    (= le jeton complet, a transmettre tel quel via un champ cache)."""
+    os.makedirs(IDENTITY_IMPORT_TMP_DIR, exist_ok=True)
+    ext = (ext or "bin").lower()
+    if not re.match(r"^[a-z0-9]{1,5}$", ext):
+        ext = "bin"
+    filename = f"{uuid.uuid4().hex}_{kind}.{ext}"
+    with open(os.path.join(IDENTITY_IMPORT_TMP_DIR, filename), "wb") as f:
+        f.write(raw_bytes)
+    return filename
+
+
+def _load_import_tmp(token):
+    """Relit les bytes precedemment sauvegardes par _save_import_tmp() a
+    partir de son jeton (= nom de fichier). Renvoie None si le jeton est
+    absent, invalide, ou si le fichier n'existe plus (formulaire soumis
+    trop tard, appli redemarree entre-temps...) -- l'appelant redemande
+    alors simplement l'image a l'utilisateur plutot que de planter."""
+    if not token or "/" in token or "\\" in token or ".." in token:
+        return None
+    path = os.path.join(IDENTITY_IMPORT_TMP_DIR, token)
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        return f.read()
+
+
+def _cleanup_import_tmp(token):
+    """Supprime un fichier temporaire d'import une fois qu'il a servi (ou
+    qu'on sait qu'il ne servira plus)."""
+    if not token or "/" in token or "\\" in token or ".." in token:
+        return
+    path = os.path.join(IDENTITY_IMPORT_TMP_DIR, token)
+    if os.path.exists(path):
+        try:
+            os.remove(path)
+        except OSError:
+            pass
 
 
 @app.route("/add_custom_totem", methods=["POST"])
@@ -3416,15 +3657,70 @@ def do_add_story_entry():
     return jsonify({"added": added, "chapters": len(session.story_log)})
 
 
+@app.route("/export_journal")
+def export_journal():
+    """Telecharge le journal complet de l'histoire active. PDF si fpdf2
+    est installe (voir journal_export.py) ; sinon secours automatique en
+    .txt brut (memes chapitres, sans mise en forme) -- jamais d'echec pur
+    et simple, meme sur un telephone ou fpdf2 ne serait pas disponible."""
+    title = CURRENT_STORY_CONFIG.get("title") or "Journal de l'histoire"
+    subtitle = CURRENT_STORY_CONFIG.get("subtitle") or ""
+    pdf_bytes = journal_export.generate_journal_pdf(title, subtitle, session.story_log)
+    if pdf_bytes is None:
+        text = session.story_log_text() or "(aucun chapitre enregistre pour l'instant)"
+        return Response(
+            text, mimetype="text/plain",
+            headers={"Content-Disposition": f'attachment; filename="journal_{CURRENT_STORY}.txt"'},
+        )
+    return Response(
+        pdf_bytes, mimetype="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="journal_{CURRENT_STORY}.pdf"'},
+    )
+
+
+@app.route("/export_identity")
+def export_identity():
+    """Telecharge le fichier d'identite (titre, sous-titre, totem,
+    description, images) de l'histoire active, reinjectable plus tard
+    depuis la page 'Nouvelle histoire' (voir do_import_identity) -- par
+    exemple apres une desinstallation/reinstallation de l'application.
+    Uniquement disponible pour une histoire personnalisee (Animorph et
+    Poudlard sont codees en dur, toujours presentes, rien a reinjecter)."""
+    if not CURRENT_STORY_CONFIG.get("is_custom"):
+        return ("Cette histoire est integree a l'application : elle est "
+                "toujours disponible, rien a exporter."), 400
+    data = stories.export_story_identity(CURRENT_STORY)
+    if data is None:
+        return "Impossible d'exporter cette histoire.", 400
+    payload = json.dumps(data, ensure_ascii=False, indent=2)
+    return Response(
+        payload, mimetype="application/json",
+        headers={"Content-Disposition": f'attachment; filename="histoire_{CURRENT_STORY}.json"'},
+    )
+
+
 @app.route("/story")
 def show_story():
     text = session.story_log_text() or "(aucun chapitre enregistre pour l'instant)"
+    # En mode manuel (sans cle Mistral), c'est ici -- et non plus sur
+    # l'ecran de jeu principal -- qu'on colle le resume de chapitre recu
+    # de l'IA narratrice pour l'ajouter au journal. En mode automatique,
+    # le journal se remplit tout seul (voir maybe_update_story_summary).
+    add_entry_html = "" if has_mistral_key() else """
+      <label style="margin-top:14px;">Coller ici le resume de chapitre recu de l'IA narratrice</label>
+      <textarea id="storyEntryInput" placeholder="Colle ici le bloc recu a la fin d'un chapitre"></textarea>
+      <button type="button" onclick="addStoryEntry()">&#128214; Ajouter au journal de l'histoire</button>
+    """
     body = f"""
     <div class="card">
       <p>Journal complet de l'histoire, chapitre par chapitre.</p>
       <textarea id="storybox" class="copybox" readonly style="min-height:320px;">{text}</textarea>
       <button id="storycopybtn" onclick="copyBox('storybox','storycopybtn')">Copier</button>
-      <a class="btn secondary" href="{url_for('index')}">&larr; Retour</a>
+      <a class="btn secondary" href="{url_for('export_journal')}">&#128214; Telecharger en PDF</a>
+      {add_entry_html}
+      <div style="margin-top:16px;">
+        <a class="btn secondary" href="{url_for('index')}">&larr; Retour</a>
+      </div>
     </div>
     """
     return layout("Journal de l'histoire", body)
