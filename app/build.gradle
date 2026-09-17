@@ -12,8 +12,8 @@ android {
     // ajoute encore le suffixe du type de build, donc le fichier final
     // s'appelle "jeux-de-role-debug.apk" (voir build-apk.yml, qui pointe
     // vers ce chemin exact).
-    archivesBaseName = "jeux-de-role"
-
+    archivesBaseName = "Dés d'Aventure"
+    
     defaultConfig {
         applicationId "com.aventure.desdice.auto"
         minSdk 24
