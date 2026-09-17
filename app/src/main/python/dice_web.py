@@ -1227,16 +1227,46 @@ def roll_animation_script():
           if (panel) {{ panel.outerHTML = html; }}
         }});
     }}
-    function speakAiFeed(){{
-      if (!window.speechSynthesis) {{ return; }}
+    // Rappelee par MainActivity.kt (TextToSpeech.onDone/onError) quand la
+    // lecture native se termine, pour remettre le bouton dans son etat
+    // initial -- meme role que utter.onend/onerror ci-dessous pour
+    // window.speechSynthesis.
+    window.__diceOnSpeakDone = function(){{
       var btn = document.getElementById('aiSpeakBtn');
+      if (btn) {{ btn.innerHTML = '\U0001f50a Ecouter'; }}
+      window.__diceSpeaking = false;
+    }};
+    function speakAiFeed(){{
+      var btn = document.getElementById('aiSpeakBtn');
+      var box = document.getElementById('aiFeedRawText');
+      var text = box ? box.value : '';
+
+      // 1. Pont natif Android (TextToSpeech, voir MainActivity.kt) --
+      // beaucoup plus fiable que window.speechSynthesis, qui n'expose
+      // quasiment jamais de voix fonctionnelles dans la WebView systeme.
+      if (window.AndroidBridge && window.AndroidBridge.speak) {{
+        if (window.__diceSpeaking) {{
+          window.AndroidBridge.stopSpeaking();
+          window.__diceOnSpeakDone();
+          return;
+        }}
+        if (!text) {{ return; }}
+        var started = window.AndroidBridge.speak(text);
+        if (started) {{
+          window.__diceSpeaking = true;
+          if (btn) {{ btn.innerHTML = '\u23f9 Arreter'; }}
+        }}
+        return;
+      }}
+
+      // 2. Secours navigateur (tests hors app, ou WebView plus ancienne
+      // sans le pont natif) -- comportement d'origine, best-effort.
+      if (!window.speechSynthesis) {{ return; }}
       if (window.speechSynthesis.speaking) {{
         window.speechSynthesis.cancel();
         if (btn) {{ btn.innerHTML = '\U0001f50a Ecouter'; }}
         return;
       }}
-      var box = document.getElementById('aiFeedRawText');
-      var text = box ? box.value : '';
       if (!text) {{ return; }}
       var utter = new SpeechSynthesisUtterance(text);
       utter.lang = 'fr-FR';
